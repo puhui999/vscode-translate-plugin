@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { join } from 'node:path';
-import { clearProviderApiKey, configureProvider } from './config';
+import { clearProviderApiKey } from './config';
 import { TranslationCache } from './core/cache';
 import { CommentParser } from './parser/commentParser';
 import { TranslationController } from './controller';
@@ -8,7 +8,7 @@ import { TranslationController } from './controller';
 let controller: TranslationController | undefined;
 let cache: TranslationCache | undefined;
 
-/** Activates local resources and commands without sending any network requests. */
+/** Activates commands and restores automatic translation when provider settings are ready. */
 export async function activate(context: vscode.ExtensionContext): Promise<{ getSnapshot: TranslationController['getSnapshot'] }> {
   await vscode.workspace.fs.createDirectory(context.globalStorageUri);
   cache = await TranslationCache.open({
@@ -18,7 +18,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<{ getS
   controller = new TranslationController(context, new CommentParser(context.asAbsolutePath('dist/onig.wasm')), cache);
   const active = controller;
   const commands: Record<string, () => unknown> = {
-    'commentTranslator.configure': () => { active.stop(); return configureProvider(context); },
+    'commentTranslator.configure': () => active.configure(),
     'commentTranslator.openSettings': () => vscode.commands.executeCommand('workbench.action.openSettings', `@ext:${context.extension.id}`),
     'commentTranslator.openReader': () => active.openReader(),
     'commentTranslator.toggle': () => active.toggle(),
@@ -29,7 +29,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<{ getS
     'commentTranslator.showStatus': () => active.showStatus(),
     'commentTranslator.demo': () => active.demo(),
     'commentTranslator.removeApiKey': async () => {
-      active.stop();
+      await active.pauseAutomatic();
       await clearProviderApiKey(context);
       void vscode.window.showInformationMessage('当前服务的 API Key 已删除。');
     },
@@ -41,6 +41,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<{ getS
     }));
   }
   context.subscriptions.push(active);
+  active.start();
   return { getSnapshot: (uri: string) => active.getSnapshot(uri) };
 }
 

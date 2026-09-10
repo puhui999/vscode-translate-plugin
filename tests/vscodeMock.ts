@@ -70,7 +70,10 @@ export const events = {
 export const settings = new Map<string, unknown>();
 const configuration = {
   get: <T>(key: string, fallback: T): T => settings.has(key) ? settings.get(key) as T : fallback,
-  update: vi.fn(async (key: string, value: unknown) => { settings.set(key, value); }),
+  update: vi.fn(async (key: string, value: unknown) => {
+    settings.set(key, value);
+    events.configuration.fire({ affectsConfiguration: (section: string) => section === 'commentTranslator' || section === `commentTranslator.${key}` } as vscode.ConfigurationChangeEvent);
+  }),
 };
 
 export interface MockDocument extends Pick<vscode.TextDocument, 'uri' | 'languageId' | 'getText' | 'lineAt'> {

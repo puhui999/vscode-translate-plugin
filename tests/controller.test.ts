@@ -7,7 +7,7 @@ import { type TranslationRenderer } from '../src/renderer';
 import type { TranslationReader } from '../src/reader';
 import type { ReaderModel } from '../src/readerContent';
 import { PROMPT_VERSION, type TranslationConfig, type TranslationItem, type TranslationService } from '../src/translation';
-import { createDocument, createEditor, events, resetVscodeMock, settings, window } from './vscodeMock';
+import { createDocument, createEditor, events, resetVscodeMock, settings, window, workspace } from './vscodeMock';
 
 vi.mock('vscode', () => import('./vscodeMock'));
 
@@ -21,6 +21,11 @@ function translationKey(text: string, promptVersion: string = PROMPT_VERSION): s
 
 async function settle(): Promise<void> { for (let i = 0; i < 20; i++) await Promise.resolve(); }
 
+function changeSetting(key: string, value: unknown): void {
+  settings.set(key, value);
+  events.configuration.fire({ affectsConfiguration: (section: string) => section === 'commentTranslator' || section === `commentTranslator.${key}` } as vscode.ConfigurationChangeEvent);
+}
+
 type Translate = (items: readonly TranslationItem[], config: TranslationConfig, signal: AbortSignal, onBatch?: (translations: Map<string, string>) => void) => Promise<Map<string, string>>;
 
 function fixture(blocks: CommentBlock[] = [block('a', 'First comment')], document = createDocument()) {
@@ -32,7 +37,7 @@ function fixture(blocks: CommentBlock[] = [block('a', 'First comment')], documen
     clear: vi.fn(() => persistent.clear()),
     flush: vi.fn(async () => {}),
   };
-  const parser = { parse: vi.fn(async (..._args: unknown[]) => blocks), supportsLanguage: vi.fn((languageId: string) => languageId === 'typescript'), dispose: vi.fn() };
+  const parser = { parse: vi.fn(async (..._args: unknown[]) => blocks), supportsLanguage: vi.fn((languageId: string) => ['typescript', 'java'].includes(languageId)), dispose: vi.fn() };
   const service = { translate: vi.fn<Translate>(async (items, _config, _signal, onBatch) => {
     const result = new Map(items.map(({ id }) => [id, `译文 ${id}`]));
     onBatch?.(result);
@@ -95,9 +100,11 @@ describe('TranslationController integration', () => {
   beforeEach(() => { vi.useFakeTimers(); resetVscodeMock(); });
   afterEach(() => { controller?.dispose(); controller = undefined; vi.useRealTimers(); });
 
-  it('remains disabled without requests during editor events until explicitly enabled', async () => {
+  it('remains disabled when the automatic preference is off until explicitly enabled', async () => {
+    settings.set('automatic', false);
     const setup = fixture();
     controller = setup.controller;
+    controller.start();
     events.active.fire(setup.editor);
     events.visible.fire([setup.editor]);
     events.change.fire({ document: setup.document, contentChanges: [{}] } as unknown as vscode.TextDocumentChangeEvent);
@@ -107,6 +114,190 @@ describe('TranslationController integration', () => {
     expect(controller.getSnapshot(setup.document.uri.toString()).enabled).toBe(false);
     await controller.toggle();
     expect(setup.service.translate).toHaveBeenCalledTimes(1);
+  });
+
+  it('automatically translates an already visible Java file once after activation', async () => {
+    const document = createDocument('// First comment', 'file:///test/Example.java');
+    Object.assign(document, { languageId: 'java' });
+    const setup = fixture(undefined, document);
+    controller = setup.controller;
+    controller.start();
+    controller.start();
+    events.active.fire(setup.editor);
+    events.visible.fire([setup.editor]);
+    await settle();
+    expect(setup.parser.parse).toHaveBeenCalledWith(document.getText(), 'java', expect.any(AbortSignal));
+    expect(setup.service.translate).toHaveBeenCalledTimes(1);
+    expect(setup.reader.open).toHaveBeenCalledTimes(1);
+    expect(controller.getSnapshot(document.uri.toString())).toMatchObject({ automatic: true, phase: 'ready', translated: 1 });
+  });
+
+  it.each(['missing-model', 'invalid-url', 'untrusted'] as const)('makes no automatic requests when %s', async (reason) => {
+    if (reason === 'missing-model') settings.delete('model');
+    if (reason === 'invalid-url') settings.set('baseUrl', 'invalid');
+    if (reason === 'untrusted') workspace.isTrusted = false;
+    const setup = fixture();
+    controller = setup.controller;
+    controller.start();
+    events.active.fire(setup.editor);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(setup.service.translate).not.toHaveBeenCalled();
+    expect(setup.parser.parse).not.toHaveBeenCalled();
+    expect(setup.reader.open).not.toHaveBeenCalled();
+    const status = window.createStatusBarItem.mock.results[0]!.value;
+    expect(status.text).toContain(reason === 'untrusted' ? '信任工作区' : '请配置服务');
+  });
+
+  it('starts for the current file when the final setting is supplied without changing editors', async () => {
+    settings.delete('model');
+    const setup = fixture();
+    controller = setup.controller;
+    controller.start();
+    changeSetting('model', 'configured-model');
+    await vi.advanceTimersByTimeAsync(599);
+    expect(setup.service.translate).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(setup.service.translate).toHaveBeenCalledTimes(1);
+    expect(setup.service.translate.mock.calls[0]![1].model).toBe('configured-model');
+  });
+
+  it('persists disabling automatic translation and restores that preference in a new controller', async () => {
+    const setup = fixture();
+    controller = setup.controller;
+    controller.start();
+    await settle();
+    await controller.toggleAutomatic();
+    expect(settings.get('automatic')).toBe(false);
+    events.active.fire(setup.editor);
+    await settle();
+    expect(controller.getSnapshot(setup.document.uri.toString()).enabled).toBe(false);
+    controller.dispose();
+    const reopened = fixture();
+    controller = reopened.controller;
+    controller.start();
+    await settle();
+    expect(reopened.service.translate).not.toHaveBeenCalled();
+    await controller.toggleAutomatic();
+    await settle();
+    expect(settings.get('automatic')).toBe(true);
+    expect(reopened.service.translate).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancels in-flight automatic translation when the persisted setting is disabled', async () => {
+    const setup = fixture();
+    controller = setup.controller;
+    const pending = lateService(setup.service);
+    controller.start();
+    await settle();
+    const signal = setup.service.translate.mock.calls[0]![2];
+    changeSetting('automatic', false);
+    expect(signal.aborted).toBe(true);
+    pending.complete();
+    await settle();
+    expect(setup.cache.set).not.toHaveBeenCalled();
+    expect(controller.getSnapshot(setup.document.uri.toString())).toMatchObject({ automatic: false, enabled: false });
+  });
+
+  it('aborts stale requests immediately when configuration becomes invalid', async () => {
+    const setup = fixture();
+    controller = setup.controller;
+    const pending = lateService(setup.service);
+    controller.start();
+    await settle();
+    const signal = setup.service.translate.mock.calls[0]![2];
+    changeSetting('model', '');
+    expect(signal.aborted).toBe(true);
+    pending.complete();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(setup.cache.set).not.toHaveBeenCalled();
+    expect(setup.service.translate).toHaveBeenCalledTimes(1);
+    expect(controller.getSnapshot(setup.document.uri.toString()).phase).toBe('error');
+  });
+
+  it('keeps the whole provider wizard paused until the final endpoint and model are ready', async () => {
+    const setup = fixture();
+    controller = setup.controller;
+    controller.start();
+    await settle();
+    setup.service.translate.mockClear();
+    window.showInputBox.mockResolvedValueOnce('https://next.example.test/v1')
+      .mockImplementationOnce(async () => {
+        events.active.fire(setup.editor);
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(setup.service.translate).not.toHaveBeenCalled();
+        return 'next-model';
+      }).mockResolvedValueOnce('');
+    await controller.configure();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(setup.service.translate).toHaveBeenCalledTimes(1);
+    expect(setup.service.translate.mock.calls[0]![1]).toMatchObject({ baseUrl: 'https://next.example.test/v1', model: 'next-model' });
+  });
+
+  it('keeps explicitly excluded files paused through provider setting changes', async () => {
+    const setup = fixture();
+    controller = setup.controller;
+    controller.start();
+    await settle();
+    await controller.toggle();
+    changeSetting('model', 'another-model');
+    await vi.advanceTimersByTimeAsync(1000);
+    events.active.fire(setup.editor);
+    await settle();
+    expect(setup.service.translate).toHaveBeenCalledTimes(1);
+    expect(controller.getSnapshot(setup.document.uri.toString()).enabled).toBe(false);
+  });
+
+  it('offers a background file reader once when focused without reopening a dismissed reader', async () => {
+    const setup = fixture();
+    controller = setup.controller;
+    const background = createDocument('// Other comment', 'file:///test/other.ts');
+    const editor = createEditor(background);
+    window.visibleTextEditors = [setup.editor, editor];
+    controller.start();
+    await settle();
+    expect(setup.reader.open).toHaveBeenCalledTimes(1);
+    window.activeTextEditor = editor;
+    events.active.fire(editor);
+    expect(setup.reader.open).toHaveBeenCalledTimes(2);
+    expect(setup.reader.open).toHaveBeenLastCalledWith(background.uri.toString(), expect.anything());
+    setup.readerModels.delete(background.uri.toString());
+    events.active.fire(editor);
+    expect(setup.reader.open).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps automatic translation disabled after cache clearing, including a later configuration event', async () => {
+    const setup = fixture();
+    controller = setup.controller;
+    controller.start();
+    await settle();
+    await controller.clearCache();
+    expect(settings.get('automatic')).toBe(false);
+    changeSetting('model', 'another-model');
+    events.active.fire(setup.editor);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(setup.service.translate).toHaveBeenCalledTimes(1);
+    expect(controller.getSnapshot(setup.document.uri.toString()).enabled).toBe(false);
+  });
+
+  it('restores the source behind a focused reader after switching automatic translation off and on', async () => {
+    const setup = fixture();
+    controller = setup.controller;
+    controller.start();
+    await settle();
+    const uri = setup.document.uri.toString();
+    setup.readerFocus.uri = uri;
+    window.activeTextEditor = undefined;
+    window.visibleTextEditors = [];
+    changeSetting('automatic', false);
+    expect(controller.getSnapshot(uri)).toMatchObject({ enabled: false, reader: { translated: 0 } });
+    changeSetting('automatic', true);
+    await settle();
+    expect(controller.getSnapshot(uri)).toMatchObject({ enabled: true, cacheHits: 1, reader: { translated: 1 } });
+    expect(setup.service.translate).toHaveBeenCalledTimes(1);
+    expect(setup.reader.open).toHaveBeenCalledTimes(1);
+    window.activeTextEditor = setup.editor;
+    events.active.fire(setup.editor);
+    expect(setup.reader.open).toHaveBeenCalledTimes(1);
   });
 
   it('renders cache hits before translation finishes and sends only misses', async () => {

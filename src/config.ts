@@ -112,5 +112,7 @@ export async function configureProvider(context: vscode.ExtensionContext): Promi
   }
   await config.update('baseUrl', baseUrl.trim(), vscode.ConfigurationTarget.Global);
   await config.update('model', model.trim(), vscode.ConfigurationTarget.Global);
-  void vscode.window.showInformationMessage('模型服务已配置。执行“开启 / 关闭当前文件翻译”开始翻译。');
+  void vscode.window.showInformationMessage(config.get<boolean>('automatic', true)
+    ? '模型服务已配置。打开 Java 等受支持的源码文件后会自动翻译注释。'
+    : '模型服务已配置。自动翻译当前关闭，可在翻译设置中开启，或手动开启当前文件翻译。');
 }

@@ -2,7 +2,7 @@
   "name": "vscode-translate-plugin",
   "displayName": "注释译读 · AI Comment Translator",
   "description": "SQLite 缓存与批量 AI 注释翻译：无边框多行源码阅读视图、原生行尾预览，自定义 OpenAI 兼容服务。",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "publisher": "local-dev",
   "license": "MIT",
   "engines": {
@@ -18,7 +18,7 @@
     "注释翻译"
   ],
   "main": "./dist/extension.js",
-  "activationEvents": [],
+  "activationEvents": ["onStartupFinished"],
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": false
@@ -39,7 +39,7 @@
       },
       {
         "command": "commentTranslator.toggleAutomatic",
-        "title": "注释译读：开启 / 关闭自动翻译（当前窗口）"
+        "title": "注释译读：开启 / 关闭自动翻译"
       },
       {
         "command": "commentTranslator.refresh",
@@ -91,6 +91,12 @@
     "configuration": {
       "title": "注释译读",
       "properties": {
+        "commentTranslator.automatic": {
+          "type": "boolean",
+          "default": true,
+          "scope": "machine",
+          "markdownDescription": "配置好服务地址与模型后，自动翻译打开的受支持源码文件（如 Java）；仅未缓存的注释会发送到你配置的服务。开关在重启后保留，关闭后可手动翻译单个文件。"
+        },
         "commentTranslator.baseUrl": {
           "type": "string",
           "default": "",

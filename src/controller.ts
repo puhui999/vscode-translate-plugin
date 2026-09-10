@@ -24,6 +24,7 @@ interface FileState {
   cacheHits: number;
   remaining: number;
   error?: string;
+  readerOffered: boolean;
 }
 
 export interface FileSnapshot {
@@ -47,11 +48,14 @@ export class TranslationController implements vscode.Disposable {
   private readonly status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 80);
   private readonly disposables: vscode.Disposable[] = [];
   private automatic = false;
+  private started = false;
+  private suspended = false;
   private disposed = false;
+  private configurationTimer?: ReturnType<typeof setTimeout>;
   private viewportTimer?: ReturnType<typeof setTimeout>;
   private lastSourceDocument?: vscode.TextDocument;
 
-  /** Attaches editor listeners; no document is sent to a service until explicitly enabled. */
+  /** Attaches editor listeners; start restores the user's automatic translation preference. */
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly parser: CommentParser,
@@ -92,10 +96,37 @@ export class TranslationController implements vscode.Disposable {
       vscode.window.onDidChangeTextEditorVisibleRanges(() => this.scheduleRender()),
       vscode.workspace.onDidChangeConfiguration((event) => {
         if (!event.affectsConfiguration(CONFIG_SECTION)) return;
+        if (this.started && event.affectsConfiguration(`${CONFIG_SECTION}.automatic`)) {
+          this.suspended = false;
+          clearTimeout(this.configurationTimer);
+          this.synchronizeAutomatic();
+          return;
+        }
+        if (this.suspended) return;
         for (const state of this.states.values()) if (state.phase !== 'demo') this.scheduleScan(state);
+        clearTimeout(this.configurationTimer);
+        if (this.started) this.configurationTimer = setTimeout(() => this.synchronizeAutomatic(), 600);
+        this.updateStatus();
       }),
     );
     this.updateStatus();
+  }
+
+  /** Restores automatic translation for visible source files after commands are registered. */
+  start(): void {
+    if (this.started || this.disposed) return;
+    this.started = true;
+    this.synchronizeAutomatic();
+  }
+
+  /** Pauses requests throughout the configuration wizard and resumes with its final settings. */
+  async configure(): Promise<void> {
+    this.stop(false);
+    try { await configureProvider(this.context); }
+    finally {
+      this.suspended = false;
+      if (this.started) this.synchronizeAutomatic();
+    }
   }
 
   /** Toggles translation for the active file, with a per-window exclusion when automatic mode is on. */
@@ -107,8 +138,9 @@ export class TranslationController implements vscode.Disposable {
     if (!this.checkDocument(document, true)) return;
     try { readSettings(document.uri); }
     catch {
-      await configureProvider(this.context);
+      await this.configure();
       try { readSettings(document.uri); } catch { return; }
+      if (this.states.has(uri)) return;
     }
     this.excluded.delete(uri);
     await this.enable(document, true);
@@ -120,28 +152,34 @@ export class TranslationController implements vscode.Disposable {
     if (!document || !this.checkDocument(document, true)) return;
     let state = this.states.get(document.uri.toString());
     if (!state) { await this.toggle(); state = this.states.get(document.uri.toString()); }
-    if (state) this.reader.open(document.uri.toString(), this.readerModel(state));
+    if (state) {
+      state.readerOffered = true;
+      this.reader.open(document.uri.toString(), this.readerModel(state));
+    }
   }
 
-  /** Enables automatic scanning on file visits for this window session, or cancels all translation. */
+  /** Persists automatic scanning across VS Code restarts, or cancels all current translation. */
   async toggleAutomatic(): Promise<void> {
     if (this.automatic) {
-      this.automatic = false;
-      for (const uri of [...this.states.keys()]) this.disable(uri);
-      this.excluded.clear();
-      this.updateStatus();
+      await this.pauseAutomatic();
       return;
     }
     if (!vscode.workspace.isTrusted) { void vscode.window.showWarningMessage('请先信任此工作区，再开启注释翻译。'); return; }
     try { readSettings(); }
     catch {
-      await configureProvider(this.context);
+      await this.configure();
       try { readSettings(); } catch { return; }
     }
-    this.automatic = true;
+    await vscode.workspace.getConfiguration(CONFIG_SECTION).update('automatic', true, vscode.ConfigurationTarget.Global);
+    this.suspended = false;
     this.excluded.clear();
-    for (const editor of vscode.window.visibleTextEditors) this.enableAutomatically(editor.document);
-    this.updateStatus();
+    this.synchronizeAutomatic();
+  }
+
+  /** Cancels all work and persists the disabled preference before removing credentials or cache. */
+  async pauseAutomatic(): Promise<void> {
+    this.stop();
+    await vscode.workspace.getConfiguration(CONFIG_SECTION).update('automatic', false, vscode.ConfigurationTarget.Global);
   }
 
   /** Retries the active file; existing persistent translations are reused. */
@@ -166,18 +204,20 @@ export class TranslationController implements vscode.Disposable {
 
   /** Clears persistent translations and stops current tasks so late results cannot refill the cache. */
   async clearCache(): Promise<void> {
-    this.stop();
+    await this.pauseAutomatic();
     this.cache.clear();
     await this.cache.flush();
     this.updateStatus();
     void vscode.window.showInformationMessage('本地 SQLite 翻译缓存已清除。再次开启翻译时会重新请求。');
   }
 
-  /** Cancels all active work before credentials or the provider are changed. */
-  stop(): void {
+  /** Suspends current work, optionally retaining per-file exclusions during provider configuration. */
+  stop(clearExclusions = true): void {
+    this.suspended = true;
+    clearTimeout(this.configurationTimer);
     this.automatic = false;
     for (const uri of [...this.states.keys()]) this.disable(uri);
-    this.excluded.clear();
+    if (clearExclusions) this.excluded.clear();
     this.updateStatus();
   }
 
@@ -263,6 +303,7 @@ export class TranslationController implements vscode.Disposable {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    clearTimeout(this.configurationTimer);
     clearTimeout(this.viewportTimer);
     for (const uri of [...this.states.keys()]) this.disable(uri);
     this.scheduler.dispose();
@@ -274,7 +315,7 @@ export class TranslationController implements vscode.Disposable {
   }
 
   private createState(document: vscode.TextDocument): FileState {
-    return { document, generation: 0, blocks: [], translations: new Map(), admitted: new Set(), remainingBudget: AUTOMATIC_COMMENT_LIMIT, phase: 'scanning', cacheHits: 0, remaining: 0 };
+    return { document, generation: 0, blocks: [], translations: new Map(), admitted: new Set(), remainingBudget: AUTOMATIC_COMMENT_LIMIT, phase: 'scanning', cacheHits: 0, remaining: 0, readerOffered: false };
   }
 
   private checkDocument(document: vscode.TextDocument, notify: boolean): boolean {
@@ -285,15 +326,46 @@ export class TranslationController implements vscode.Disposable {
 
   private enableAutomatically(document: vscode.TextDocument): void {
     const uri = document.uri.toString();
-    if (this.disposed || this.excluded.has(uri) || this.states.has(uri) || !this.checkDocument(document, false)) return;
-    void this.enable(document, vscode.window.activeTextEditor?.document.uri.toString() === uri);
+    if (this.disposed || this.suspended || this.excluded.has(uri) || !this.checkDocument(document, false)) return;
+    try { readSettings(document.uri); } catch { return; }
+    const openReader = vscode.window.activeTextEditor?.document.uri.toString() === uri;
+    const state = this.states.get(uri);
+    if (state) {
+      if (state.phase !== 'demo' && openReader && !state.readerOffered && this.usesReader(document)) {
+        state.readerOffered = true;
+        this.reader.open(uri, this.readerModel(state));
+      }
+      return;
+    }
+    void this.enable(document, openReader);
+  }
+
+  private synchronizeAutomatic(): void {
+    if (this.disposed || this.suspended) return;
+    const enabled = vscode.workspace.isTrusted && vscode.workspace.getConfiguration(CONFIG_SECTION).get<boolean>('automatic', true);
+    if (!enabled) {
+      if (this.automatic) this.stop();
+      this.suspended = false;
+    }
+    this.automatic = enabled;
+    if (enabled) {
+      const documents = new Map(vscode.window.visibleTextEditors.map((editor) => [editor.document.uri.toString(), editor.document]));
+      const activeDocument = this.getActiveDocument();
+      if (activeDocument) documents.set(activeDocument.uri.toString(), activeDocument);
+      for (const document of documents.values()) this.enableAutomatically(document);
+    }
+    this.updateStatus();
   }
 
   private async enable(document: vscode.TextDocument, openReader = false): Promise<void> {
     if (vscode.window.activeTextEditor?.document.uri.toString() === document.uri.toString()) this.rememberSource(document);
     const state = this.createState(document);
+    state.readerOffered = this.reader.snapshot(document.uri.toString()).open;
     this.states.set(document.uri.toString(), state);
-    if (openReader && this.usesReader(document)) this.reader.open(document.uri.toString(), this.readerModel(state));
+    if (openReader && this.usesReader(document)) {
+      state.readerOffered = true;
+      this.reader.open(document.uri.toString(), this.readerModel(state));
+    }
     await this.scan(state);
   }
 
@@ -424,7 +496,7 @@ export class TranslationController implements vscode.Disposable {
       // The service sanitizes provider errors; never include response bodies in UI or logs.
       void vscode.window.showWarningMessage(`注释译读：${state.error}`, '重试', '配置服务').then((choice) => {
         if (choice === '重试' && this.states.get(uri) === state) void this.scan(state);
-        if (choice === '配置服务') { this.stop(); void configureProvider(this.context); }
+        if (choice === '配置服务') void vscode.commands.executeCommand('commentTranslator.configure');
       });
     } finally {
       if (current()) this.updateStatus();
@@ -480,15 +552,20 @@ export class TranslationController implements vscode.Disposable {
     const document = this.getActiveDocument();
     if (!document || !this.parser.supportsLanguage(document.languageId)) { this.status.hide(); return; }
     const snapshot = this.getSnapshot(document.uri.toString());
-    if (!snapshot.enabled) this.status.text = this.automatic ? '$(globe) 译读：此文件已暂停' : '$(globe) 开启译读';
+    let configurationError: string | undefined;
+    try { readSettings(document.uri); } catch (error) { configurationError = error instanceof Error ? error.message : '请检查翻译设置。'; }
+    this.status.command = !snapshot.enabled && configurationError ? 'commentTranslator.openSettings' : 'commentTranslator.toggle';
+    if (!snapshot.enabled) this.status.text = !vscode.workspace.isTrusted ? '$(lock) 译读：请信任工作区'
+      : configurationError ? '$(settings-gear) 译读：请配置服务'
+      : this.automatic ? '$(globe) 译读：此文件已暂停' : '$(globe) 译读：自动翻译已关闭';
     else if (snapshot.phase === 'scanning') this.status.text = '$(sync~spin) 译读：扫描 / 查库';
     else if (snapshot.phase === 'translating') this.status.text = `$(sync~spin) 译读 ${snapshot.translated}/${snapshot.total}`;
     else if (snapshot.phase === 'error') this.status.text = '$(warning) 译读：需要处理';
     else if (snapshot.phase === 'demo') this.status.text = '$(globe) 译读：离线示例';
     else this.status.text = `$(globe) 译读 ${snapshot.translated}/${snapshot.total}${snapshot.remaining ? ' · 待继续' : ''}`;
     this.status.tooltip = snapshot.enabled
-      ? `点击关闭当前文件翻译。SQLite 命中 ${snapshot.cacheHits} 条。${snapshot.error ?? ''}\n命令面板可查看状态、继续翻译或开启当前窗口自动翻译。`
-      : '点击开启当前文件翻译。已缓存译文直接显示，仅未命中注释会发送到你配置的模型服务。';
+      ? `点击关闭当前文件翻译。SQLite 命中 ${snapshot.cacheHits} 条。${snapshot.error ?? ''}\n命令面板可查看状态、继续翻译或切换自动翻译。`
+      : configurationError ?? '点击开启当前文件翻译。已缓存译文直接显示，仅未命中注释会发送到你配置的模型服务。';
     this.status.show();
   }
 
