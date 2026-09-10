@@ -144,7 +144,7 @@ Vue 仅处理已支持的 script / style 注释；HTML 注释跳过。按当前�
 
 ## 开发和验证
 
-开发使用 Node.js 22+（建议 24），扩展输出面向 VS Code 1.85+ 的 Node 18 运行时。
+开发使用 Node.js 22+（CI 固定为 24.13.1），扩展输出面向 VS Code 1.85+ 的 Node 18 运行时。
 
 ```sh
 npm install
@@ -158,7 +158,7 @@ npm run package
 
 `npm run compile` 先运行 TypeScript strict 检查，再用 esbuild 打包到 `dist/extension.js` 并复制两个 WASM 资源。VS Code 中按 F5 启动扩展开发窗口。测试使用 Mock，不需要模型 Key。
 
-推送与 `package.json` 版本一致的标签（例如 `v0.2.1`）后，GitHub Actions 会运行测试、构建 VSIX，并将安装包与 SHA-256 校验文件上传到 GitHub Release。发布说明放在 `.github/release-notes/<标签>.md`。工作流使用仓库自带的 `GITHUB_TOKEN`，无需另外配置个人访问令牌。
+推送与 `package.json` 版本一致的标签（例如 `v0.2.2`）后，GitHub Actions 会运行测试、构建 VSIX，并将安装包与 SHA-256 校验文件上传到 GitHub Release。发布说明放在 `.github/release-notes/<标签>.md`。工作流使用仓库自带的 `GITHUB_TOKEN`，无需另外配置个人访问令牌。分支推送也会运行依赖安装、测试与打包检查。
 
 如需发布到 Marketplace，再将 `package.json` 的 `publisher: local-dev` 替换为自己的 Marketplace publisher，并使用 `vsce publish`。GitHub Release 工作流不会发布到 Marketplace，也不会安装到用户的日常 VS Code；本地 `npm run package` 仅打包。
 
