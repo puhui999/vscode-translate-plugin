@@ -244,6 +244,38 @@ exports.run = async function run() {
       assert.equal(markup.isDirty, false);
     }
 
+    for (const [name, language, singleDoc] of [
+      ['SingleLineDocs.java', 'java', '/** Description. */'],
+      ['SingleLineDocs.cs', 'csharp', '/// <summary>Description.</summary>'],
+    ]) {
+      const source = `class SingleLineDocs {\n    ${singleDoc}\n    int count;\n\t/**Returns the configured value.*/\n    int GetCount() { return count; }\n}\n`;
+      const singleDocPath = path.join(project, '.vscode-test', name);
+      await fs.writeFile(singleDocPath, source);
+      const singleDocDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(singleDocPath));
+      assert.equal(singleDocDocument.languageId, language);
+      const beforeSingleDoc = requests.length;
+      await vscode.window.showTextDocument(singleDocDocument, { preview: false });
+      await waitForReader(api, singleDocDocument, 2);
+      await waitUntil(() => api.getSnapshot(singleDocDocument.uri.toString()).phase === 'ready', 'Single-line documentation must finish translating');
+      assert.equal(requests.length, beforeSingleDoc + 1);
+      assert.deepEqual(requests.at(-1).map(item => item.text), [
+        language === 'java' ? 'Description.' : '<summary>Description.</summary>',
+        'Returns the configured value.',
+      ], 'Indentation and documentation wrappers must not leak into normalized requests');
+      await focusDocument(singleDocDocument);
+      vscode.window.activeTextEditor.selection = new vscode.Selection(0, 0, 0, 0);
+      if (process.env.CAPTURE_TRANSLATION_SINGLE_DOC && language === 'java') {
+        await fs.writeFile(path.join(project, '.vscode-test', 'capture-single-doc-ready'), 'ready');
+        const deadline = Date.now() + 45000;
+        while (Date.now() < deadline) {
+          try { await fs.access(path.join(project, '.vscode-test', 'capture-single-doc-done')); break; } catch {}
+          await new Promise(resolve => setTimeout(resolve, 150));
+        }
+      }
+      assert.equal(singleDocDocument.getText(), source);
+      assert.equal(singleDocDocument.isDirty, false);
+    }
+
     const markdownPath = path.join(project, '.vscode-test', 'reading-guide.md');
     const markdownSource = '# Reading guide\n\n## Getting started\n\nRead the documentation at [VS Code](https://code.visualstudio.com/).\n\n- First step\n- Second step\n\n| Feature | Description |\n| --- | --- |\n| Cache | Reuse translations |\n\n```ts\nconst original = "do not translate";\n```\n';
     await fs.writeFile(markdownPath, markdownSource);
@@ -297,7 +329,7 @@ exports.run = async function run() {
       }
       assert.equal(inlineDocument.getText(), inlineSource, 'Inline visual replacement and inspection must preserve executable source');
     }
-    console.log('ELECTRON_SMOKE_PASSED: startup activation, borderless reader DOM, unchanged source, custom provider settings, batching, SQLite reuse, changed-comment-only requests, automatic Java/HTML/XML, manual whole Markdown reader, context URI dispatch, disabled background Markdown, persisted disable and resume');
+    console.log('ELECTRON_SMOKE_PASSED: startup activation, borderless reader DOM, unchanged source, custom provider settings, batching, SQLite reuse, changed-comment-only requests, automatic Java/HTML/XML, indented Java/C# single-line docs, manual whole Markdown reader, context URI dispatch, disabled background Markdown, persisted disable and resume');
   } finally {
     await new Promise(resolve => server.close(resolve));
   }

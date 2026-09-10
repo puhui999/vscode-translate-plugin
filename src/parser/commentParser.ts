@@ -264,16 +264,20 @@ export class CommentParser {
           recordCode(extent, tokenText, start);
           continue;
         }
-        if (!current && start === end) {
+        // Java/C# documentation scopes can begin with indentation, including
+        // separate whitespace tokens. Only skip it when opening a candidate;
+        // continuation lines must retain their exact source formatting.
+        const commentStart = current ? start : start + (tokenText.match(/^[\t ]*/)?.[0].length ?? 0);
+        if (!current && commentStart === end) {
           continue;
         }
         current ??= {
-          start: { line: lineIndex, character: start },
+          start: { line: lineIndex, character: commentStart },
           end: { line: lineIndex, character: end },
-          startOffset: offset + start,
+          startOffset: offset + commentStart,
           endOffset: offset + end,
-          lineStyle: /^(?:\/\/|#|--)/.test(tokenText),
-          documentation: scope.documentation || DOCUMENTATION_PREFIX.test(line.slice(start)),
+          lineStyle: /^(?:\/\/|#|--)/.test(tokenText.slice(commentStart - start)),
+          documentation: scope.documentation || DOCUMENTATION_PREFIX.test(line.slice(commentStart)),
         };
         current.end = { line: lineIndex, character: end };
         current.endOffset = offset + end;

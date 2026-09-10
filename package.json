@@ -2,7 +2,7 @@
   "name": "vscode-translate-plugin",
   "displayName": "注释译读 · AI Comment Translator",
   "description": "SQLite 缓存与批量 AI 注释翻译：无边框多行阅读视图、源码注释原位译文，自定义 OpenAI 兼容服务。",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "publisher": "local-dev",
   "license": "MIT",
   "engines": {

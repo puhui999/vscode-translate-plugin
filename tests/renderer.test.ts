@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createRequire } from 'node:module';
 import type * as vscode from 'vscode';
 import { TranslationRenderer } from '../src/renderer';
-import type { CommentBlock } from '../src/parser/commentParser';
+import { CommentParser, type CommentBlock } from '../src/parser/commentParser';
 import { MarkdownString, Range, comments, createDocument, createEditor, events, resetVscodeMock, window } from './vscodeMock';
 
 vi.mock('vscode', () => import('./vscodeMock'));
@@ -27,6 +28,47 @@ describe('TranslationRenderer integration', () => {
   let renderer: TranslationRenderer | undefined;
   beforeEach(() => resetVscodeMock());
   afterEach(() => { renderer?.dispose(); renderer = undefined; });
+
+  it.each([
+    ['java', '  ', '/** Description. */', '描述。', '/** 描述。 */'],
+    ['java', '\t', '/**Description.*/', '描述。', '/**描述。*/'],
+    ['csharp', '    ', '/** Description. */', '描述。', '/** 描述。 */'],
+    ['csharp', '\t ', '/// <summary>Description.</summary>', '<summary>描述。</summary>', '/// <summary>描述。</summary>'],
+  ])('renders indented single-line %s documentation from actual grammar ranges', async (languageId, indent, rawText, translation, displayed) => {
+    const source = `class Example {\n${indent}${rawText}\n  void Run() {}\n}\n`;
+    const document = createDocument(source);
+    Object.assign(document, { languageId });
+    const editor = createEditor(document);
+    Object.assign(editor, { selections: [new Range(2, 2, 2, 2)] });
+    window.activeTextEditor = editor;
+    window.visibleTextEditors = [editor];
+    const parser = new CommentParser(createRequire(import.meta.url).resolve('vscode-oniguruma/release/onig.wasm'));
+    try {
+      const blocks = await parser.parse(source, languageId);
+      expect(blocks).toHaveLength(1);
+      const block = blocks[0];
+      expect(block.rawText).toBe(rawText);
+      expect(block.start).toEqual({ line: 1, character: indent.length });
+      renderer = new TranslationRenderer();
+      renderer.render(document as unknown as vscode.TextDocument, blocks, new Map([[block.id, translation]]), 10);
+      const painted = decorations(editor, 'replacement');
+      expect(painted).toHaveLength(1);
+      expect(painted[0].range.start).toEqual(new Range(1, indent.length, 1, indent.length).start);
+      expect(painted[0].renderOptions?.before?.contentText).toBe(displayed);
+      expect(document.getText(decorations(editor, 'hidden')[0].range)).toBe(rawText);
+      expect((decorations(editor, 'hover')[0].hoverMessage as unknown as MarkdownString).value).toContain(rawText);
+      expect(document.getText()).toBe(source);
+      expect(document.version).toBe(1);
+
+      // Reading translations and deliberately entering their source line remain distinct.
+      Object.assign(editor, { selections: [new Range(1, indent.length, 1, indent.length)] });
+      events.selection.fire({ textEditor: editor } as vscode.TextEditorSelectionChangeEvent);
+      expect(decorations(editor, 'replacement')).toEqual([]);
+      Object.assign(editor, { selections: [new Range(2, 2, 2, 2)] });
+      events.selection.fire({ textEditor: editor } as vscode.TextEditorSelectionChangeEvent);
+      expect(decorations(editor, 'replacement')[0].renderOptions?.before?.contentText).toBe(displayed);
+    } finally { parser.dispose(); }
+  });
 
   it.each(['documentation', 'standalone', 'trailing', 'inline'] as const)('visually replaces %s comments at their original position without changing the source', (kind) => {
     const rawText = kind === 'documentation' || kind === 'inline' ? '/** First comment */' : '// First comment';

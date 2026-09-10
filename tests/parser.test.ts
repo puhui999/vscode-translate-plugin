@@ -266,6 +266,97 @@ describe('comment boundaries and locations', () => {
 });
 
 describe('language context and documentation', () => {
+  describe.each(['java', 'csharp', 'typescript', 'kotlin'])('%s documentation boundaries', (languageId) => {
+    it.each([
+      ['  ', '/** Description */', 'Description'],
+      ['\t ', '/**Description*/', 'Description'],
+      [' \t', '/**** Description */', 'Description'],
+      ['\t\t', '/** See {@link Foo}. */', 'See {@link Foo}.'],
+      ['  ', '/** <p>Description</p> */', '<p>Description</p>'],
+      [' \t ', '/** @param userId User identifier. */', '@param userId User identifier.'],
+    ])('starts at the delimiter after %j in %s', async (indentation, rawText, content) => {
+      const source = `class Example {\r\n${indentation}${rawText}  \t\r\n}`;
+      const blocks = await PARSER.parse(source, languageId);
+      expect(blocks).toHaveLength(1);
+      expect(blocks[0]).toMatchObject({
+        rawText,
+        text: content,
+        kind: 'documentation',
+        start: { line: 1, character: indentation.length },
+        end: { line: 1, character: indentation.length + rawText.length },
+      });
+    });
+
+    it('preserves continuation indentation and CRLF in a three-line shell', async () => {
+      const rawText = '/**\r\n\t * Read 😀 profiles.\r\n\t */';
+      const blocks = await PARSER.parse(`class Example {\r\n\t ${rawText}\r\n}`, languageId);
+      expect(blocks).toHaveLength(1);
+      expect(blocks[0]).toMatchObject({
+        rawText,
+        text: 'Read 😀 profiles.',
+        kind: 'documentation',
+        start: { line: 1, character: 2 },
+        end: { line: 3, character: 4 },
+      });
+    });
+
+    it('keeps adjacent single-line block documentation separate', async () => {
+      const first = '/** First 😀 description. */';
+      const second = '/** Second description. */';
+      const source = `class Example {\n  ${first} ${second}\n\t${first}\n\t${second}\n}`;
+      const blocks = await PARSER.parse(source, languageId);
+      expect(blocks.map((block) => block.rawText)).toEqual([first, second, first, second]);
+      expect(blocks.map((block) => block.text)).toEqual([
+        'First 😀 description.', 'Second description.', 'First 😀 description.', 'Second description.',
+      ]);
+      expect(blocks.map((block) => block.kind)).toEqual(Array(4).fill('documentation'));
+      expect(blocks.map((block) => block.start)).toEqual([
+        { line: 1, character: 2 },
+        { line: 1, character: 3 + first.length },
+        { line: 2, character: 1 },
+        { line: 3, character: 1 },
+      ]);
+    });
+
+    it('retains placement classification and UTF-16 offsets after code', async () => {
+      const source = 'class Example {\n  String value = "😀"; /** Trailing description. */\n  run(/** Argument description. */ value);\n}';
+      const blocks = await PARSER.parse(source, languageId);
+      expect(blocks.map((block) => block.text)).toEqual(['Trailing description.', 'Argument description.']);
+      expect(blocks.map((block) => block.kind)).toEqual(['trailing', 'inline']);
+      expect(blocks[0].start).toEqual({ line: 1, character: source.split('\n')[1].indexOf('/**') });
+      expect(blocks[1].start).toEqual({ line: 2, character: 6 });
+    });
+  });
+
+  it.each(['  ', '\t', ' \t '])('recognizes C# XML documentation after %j', async (indentation) => {
+    const rawText = '/// <param name="userId">Read 😀 profiles.</param>';
+    const blocks = await PARSER.parse(`class Example {\r\n${indentation}${rawText}\r\n}`, 'csharp');
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]).toMatchObject({
+      rawText,
+      text: '<param name="userId">Read 😀 profiles.</param>',
+      kind: 'documentation',
+      start: { line: 1, character: indentation.length },
+      end: { line: 1, character: indentation.length + rawText.length },
+    });
+  });
+
+  it('merges indented C# documentation lines while preserving their original shells', async () => {
+    const rawText = '/// <summary>\r\n\t /// Read profiles.\r\n\t /// </summary>\r\n\t /// <param name="userId">User identifier.</param>';
+    const source = `class Example {\r\n\t ${rawText}\r\n\r\n\t /// Another description.\r\n}`;
+    const blocks = await PARSER.parse(source, 'csharp');
+    expect(blocks).toHaveLength(2);
+    expect(blocks[0]).toMatchObject({
+      rawText,
+      text: '<summary>\nRead profiles.\n</summary>\n<param name="userId">User identifier.</param>',
+      kind: 'documentation',
+      start: { line: 1, character: 2 },
+      end: { line: 4, character: rawText.split('\r\n')[3].length },
+    });
+    expect(blocks[1].rawText).toBe('/// Another description.');
+    expect(blocks[1].text).toBe('Another description.');
+  });
+
   it('skips URL strings, regex literals, escaped strings and template text', async () => {
     const source = [
       'const url = "https://example.com/a/*path*/";',
