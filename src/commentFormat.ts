@@ -45,10 +45,10 @@ function parseLayout(rawText: string): CommentLayout | undefined {
 
   const opener = rawText.startsWith('/*')
     ? rawText.startsWith('/*!') ? '/*!' : rawText.startsWith('/**') && rawText[3] !== '/' ? '/**' : '/*'
-    : /^=begin\b/.test(rawText) ? '=begin' : rawText.startsWith('<#') ? '<#' : undefined;
+    : /^=begin\b/.test(rawText) ? '=begin' : rawText.startsWith('<#') ? '<#' : rawText.startsWith('<!--') ? '<!--' : undefined;
   if (!opener) return undefined;
-  const closer = opener === '=begin' ? '=end' : opener === '<#' ? '#>' : '*/';
-  const family = opener === '=begin' ? 'ruby' : opener === '<#' ? 'powershell' : 'block';
+  const closer = opener === '=begin' ? '=end' : opener === '<#' ? '#>' : opener === '<!--' ? '-->' : '*/';
+  const family = opener === '=begin' ? 'ruby' : opener === '<#' ? 'powershell' : opener === '<!--' ? 'markup' : 'block';
   const layout: CommentLayout = { family, before: [], after: [], opening: '', closing: '', rows: [], defaultPrefix: '' };
   const body = [...lines];
   body[0] = body[0].slice(opener.length);
@@ -61,7 +61,7 @@ function parseLayout(rawText: string): CommentLayout | undefined {
     body[0] = body[0].slice(gap.length);
   }
   const last = body.length - 1;
-  const closingMatch = body[last]?.match(family === 'ruby' ? /^([\t ]*)=end[\t ]*$/ : /^(.*?)([\t ]*)(\*\/|#>)[\t ]*$/);
+  const closingMatch = body[last]?.match(family === 'ruby' ? /^([\t ]*)=end[\t ]*$/ : /^(.*?)([\t ]*)(\*\/|#>|-->)[\t ]*$/);
   if (closingMatch && (family === 'ruby' || closingMatch[3] === closer)) {
     if (family === 'ruby' || !closingMatch[1].trim()) {
       layout.after.push(body[last]);

@@ -71,7 +71,7 @@ function documentSignatures(text: string): string[][] {
 }
 
 function markupSignatures(text: string): string[] {
-  // XML documentation tags are still meaningful inside C#/Java comments, even when HTML files are excluded.
+  // Preserve markup in HTML/XML comment bodies and C#/Java documentation alike.
   // Requiring the tag name directly after '<' avoids interpreting ordinary "a < b" comparisons as markup.
   return [...text.matchAll(/<\/?[A-Za-z][A-Za-z0-9_.:-]*(?:\s+[A-Za-z_:][A-Za-z0-9_.:-]*(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+))?)*\s*\/?>/g)]
     .map((match) => match[0]);

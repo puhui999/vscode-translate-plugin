@@ -17,10 +17,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<{ getS
   });
   controller = new TranslationController(context, new CommentParser(context.asAbsolutePath('dist/onig.wasm')), cache);
   const active = controller;
-  const commands: Record<string, () => unknown> = {
+  const commands: Record<string, (target?: vscode.Uri) => unknown> = {
     'commentTranslator.configure': () => active.configure(),
     'commentTranslator.openSettings': () => vscode.commands.executeCommand('workbench.action.openSettings', `@ext:${context.extension.id}`),
     'commentTranslator.openReader': () => active.openReader(),
+    'commentTranslator.translateMarkdown': (target) => active.translateMarkdown(target),
     'commentTranslator.toggle': () => active.toggle(),
     'commentTranslator.toggleAutomatic': () => active.toggleAutomatic(),
     'commentTranslator.refresh': () => active.refresh(),
@@ -35,8 +36,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<{ getS
     },
   };
   for (const [command, handler] of Object.entries(commands)) {
-    context.subscriptions.push(vscode.commands.registerCommand(command, async () => {
-      try { return await handler(); }
+    context.subscriptions.push(vscode.commands.registerCommand(command, async (target?: vscode.Uri) => {
+      try { return await handler(target); }
       catch (error) { void vscode.window.showErrorMessage(`注释译读：${error instanceof Error ? error.message : '操作失败。'}`); }
     }));
   }

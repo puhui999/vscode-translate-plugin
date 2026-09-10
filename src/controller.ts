@@ -7,11 +7,14 @@ import { TranslationService, PROMPT_VERSION, normalizeEndpoint, preservesComment
 import { TranslationRenderer } from './renderer';
 import { TranslationReader } from './reader';
 import type { ReaderModel } from './readerContent';
+import { applyMarkdownTranslations, MARKDOWN_PROMPT_VERSION, parseMarkdown, preservesMarkdownStructure, type MarkdownChunk } from './markdown';
 
 const AUTOMATIC_COMMENT_LIMIT = 500;
-type Phase = 'scanning' | 'translating' | 'ready' | 'error' | 'demo';
+type Phase = 'scanning' | 'translating' | 'ready' | 'error' | 'demo' | 'stale';
 
 interface FileState {
+  mode: 'comments' | 'markdown';
+  markdownChunks: MarkdownChunk[];
   document: vscode.TextDocument;
   generation: number;
   abort?: AbortController;
@@ -135,6 +138,7 @@ export class TranslationController implements vscode.Disposable {
     if (!document) return;
     const uri = document.uri.toString();
     if (this.states.has(uri)) { this.excluded.add(uri); this.disable(uri); return; }
+    if (document.languageId === 'markdown') { await this.translateMarkdown(document.uri); return; }
     if (!this.checkDocument(document, true)) return;
     try { readSettings(document.uri); }
     catch {
@@ -149,6 +153,7 @@ export class TranslationController implements vscode.Disposable {
   /** Opens a borderless multiline reading view for the current source file. */
   async openReader(): Promise<void> {
     const document = this.getActiveDocument();
+    if (document?.languageId === 'markdown') { await this.translateMarkdown(document.uri); return; }
     if (!document || !this.checkDocument(document, true)) return;
     let state = this.states.get(document.uri.toString());
     if (!state) { await this.toggle(); state = this.states.get(document.uri.toString()); }
@@ -156,6 +161,39 @@ export class TranslationController implements vscode.Disposable {
       state.readerOffered = true;
       this.reader.open(document.uri.toString(), this.readerModel(state));
     }
+  }
+
+  /** Translates an explicitly selected Markdown file into a read-only reader, never on open. */
+  async translateMarkdown(target?: vscode.Uri): Promise<void> {
+    if (this.disposed) return;
+    if (!vscode.workspace.isTrusted) { void vscode.window.showWarningMessage('请先信任此工作区，再翻译 Markdown。'); return; }
+    if (target && !['file', 'untitled'].includes(target.scheme)) return;
+    const document = target
+      ? vscode.workspace.textDocuments.find((item) => item.uri.toString() === target.toString() && !item.isClosed)
+        ?? await vscode.workspace.openTextDocument(target)
+      : this.getActiveDocument();
+    if (!document || document.isClosed || document.languageId !== 'markdown' || !this.checkDocument(document, true, true)) {
+      void vscode.window.showInformationMessage('请在 Markdown 文件上右键选择“翻译整个 Markdown 文件”。');
+      return;
+    }
+    try { readSettings(document.uri); }
+    catch {
+      await this.configure();
+      try { readSettings(document.uri); } catch { return; }
+    }
+    if (this.disposed || document.isClosed) return;
+    const uri = document.uri.toString();
+    const existing = this.states.get(uri);
+    if (existing?.mode === 'markdown') {
+      this.reader.open(uri, this.readerModel(existing));
+      // Repeated menu clicks focus the ongoing reader instead of cancelling a paid request.
+      if (existing.phase !== 'scanning' && existing.phase !== 'translating') await this.scan(existing);
+      return;
+    }
+    const state = this.createState(document, 'markdown');
+    this.states.set(uri, state);
+    this.reader.open(uri, this.readerModel(state));
+    await this.scan(state);
   }
 
   /** Persists automatic scanning across VS Code restarts, or cancels all current translation. */
@@ -225,8 +263,9 @@ export class TranslationController implements vscode.Disposable {
   showStatus(): void {
     const uri = this.getActiveDocument()?.uri.toString() ?? '';
     const state = this.getSnapshot(uri);
+    const unit = this.states.get(uri)?.mode === 'markdown' ? 'Markdown 片段' : '注释';
     const message = !state.enabled ? '当前文件未开启注释翻译。' : [
-      state.phase === 'demo' ? '离线效果示例（未调用 AI）' : `注释 ${state.total} 条，已有译文 ${state.translated} 条，SQLite 命中 ${state.cacheHits} 条。`,
+      state.phase === 'demo' ? '离线效果示例（未调用 AI）' : `${unit} ${state.total} 条，已有译文 ${state.translated} 条，SQLite 命中 ${state.cacheHits} 条。`,
       state.remaining ? `还有 ${state.remaining} 条待手动继续。` : '',
       state.error ?? '',
     ].filter(Boolean).join(' ');
@@ -238,7 +277,7 @@ export class TranslationController implements vscode.Disposable {
     const state = this.states.get(uri);
     return {
       enabled: !!state, automatic: this.automatic, phase: state?.phase,
-      total: state?.blocks.length ?? 0, translated: state?.translations.size ?? 0,
+      total: state ? this.unitCount(state) : 0, translated: state?.translations.size ?? 0,
       cacheHits: state?.cacheHits ?? 0, remaining: state?.remaining ?? 0,
       widgets: this.renderer.widgetCount(uri), reader: this.reader.snapshot(uri), error: state?.error,
     };
@@ -314,13 +353,14 @@ export class TranslationController implements vscode.Disposable {
     for (const disposable of this.disposables) disposable.dispose();
   }
 
-  private createState(document: vscode.TextDocument): FileState {
-    return { document, generation: 0, blocks: [], translations: new Map(), admitted: new Set(), remainingBudget: AUTOMATIC_COMMENT_LIMIT, phase: 'scanning', cacheHits: 0, remaining: 0, readerOffered: false };
+  private createState(document: vscode.TextDocument, mode: FileState['mode'] = 'comments'): FileState {
+    return { document, mode, markdownChunks: [], generation: 0, blocks: [], translations: new Map(), admitted: new Set(), remainingBudget: mode === 'markdown' ? Number.POSITIVE_INFINITY : AUTOMATIC_COMMENT_LIMIT, phase: 'scanning', cacheHits: 0, remaining: 0, readerOffered: false };
   }
 
-  private checkDocument(document: vscode.TextDocument, notify: boolean): boolean {
-    const valid = vscode.workspace.isTrusted && ['file', 'untitled'].includes(document.uri.scheme) && this.parser.supportsLanguage(document.languageId);
-    if (!valid && notify) void vscode.window.showInformationMessage('当前文件类型暂不支持，或工作区尚未信任。Python、HTML/XML、Markdown 按当前范围排除。');
+  private checkDocument(document: vscode.TextDocument, notify: boolean, allowMarkdown = false): boolean {
+    const valid = vscode.workspace.isTrusted && ['file', 'untitled'].includes(document.uri.scheme) &&
+      (this.parser.supportsLanguage(document.languageId) || (allowMarkdown && document.languageId === 'markdown'));
+    if (!valid && notify) void vscode.window.showInformationMessage('当前文件类型暂不支持，或工作区尚未信任。Python 暂不支持；Markdown 请使用右键“翻译整个 Markdown 文件”。');
     return valid;
   }
 
@@ -390,6 +430,16 @@ export class TranslationController implements vscode.Disposable {
     this.scheduler.cancel(state.document.uri.toString());
     this.renderer.clearFile(state.document.uri.toString());
     state.translations.clear();
+    if (state.mode === 'markdown') {
+      clearTimeout(state.timer);
+      state.markdownChunks = [];
+      state.phase = 'stale';
+      state.cacheHits = 0;
+      state.error = undefined;
+      this.reader.update(state.document.uri.toString(), this.readerModel(state));
+      this.updateStatus();
+      return;
+    }
     state.phase = 'scanning';
     this.reader.update(state.document.uri.toString(), this.readerModel(state));
     clearTimeout(state.timer);
@@ -419,18 +469,21 @@ export class TranslationController implements vscode.Disposable {
     this.updateStatus();
     try {
       const settings = readSettings(document.uri);
-      const config: TranslationConfig = { ...settings, apiKey: await readApiKey(this.context, settings.baseUrl, document.uri) };
+      const config: TranslationConfig = { ...settings, ...(state.mode === 'markdown' ? { contentKind: 'markdown' as const } : {}), apiKey: await readApiKey(this.context, settings.baseUrl, document.uri) };
       await this.cache.flush();
       if (!current()) return;
-      const blocks = await this.parser.parse(document.getText(), document.languageId, abort.signal);
+      if (state.mode === 'markdown') state.markdownChunks = parseMarkdown(document.getText(), config.maxBatchChars);
+      else state.blocks = await this.parser.parse(document.getText(), document.languageId, abort.signal);
       if (!current()) return;
-      state.blocks = blocks;
-      const groups = new Map<string, { key: string; blocks: CommentBlock[]; context: Parameters<typeof cacheKey>[0] }>();
+      const blocks = state.mode === 'markdown' ? state.markdownChunks : state.blocks;
+      type Unit = { id: string; text: string };
+      const groups = new Map<string, { key: string; blocks: Unit[]; context: Parameters<typeof cacheKey>[0] }>();
       for (const block of blocks) {
-        const context = { text: block.text, languageId: block.languageId, baseUrl: normalizeEndpoint(config.baseUrl), model: config.model, targetLanguage: config.targetLanguage, promptVersion: PROMPT_VERSION, prompt: config.prompt };
+        const context = { text: block.text, languageId: state.mode === 'markdown' ? 'markdown-document' : document.languageId, baseUrl: normalizeEndpoint(config.baseUrl), model: config.model, targetLanguage: config.targetLanguage, promptVersion: state.mode === 'markdown' ? MARKDOWN_PROMPT_VERSION : PROMPT_VERSION, prompt: config.prompt };
         const key = cacheKey(context);
         let cached = this.cache.get(uri, key);
-        if (cached === undefined) {
+        if (cached !== undefined && state.mode === 'markdown' && !preservesMarkdownStructure(block.text, cached)) cached = undefined;
+        if (cached === undefined && state.mode !== 'markdown') {
           const legacy = this.cache.get(uri, cacheKey({ ...context, promptVersion: '1' }));
           if (legacy !== undefined && preservesCommentStructure(block.text, legacy)) {
             cached = legacy;
@@ -441,13 +494,13 @@ export class TranslationController implements vscode.Disposable {
           state.translations.set(block.id, cached);
           state.cacheHits++;
         } else {
-          const group = groups.get(key) ?? { key, blocks: [] as CommentBlock[], context };
+          const group = groups.get(key) ?? { key, blocks: [] as Unit[], context };
           group.blocks.push(block);
           groups.set(key, group);
         }
       }
       this.render(state);
-      const requests = new Map<string, { key: string; blocks: CommentBlock[]; context: Parameters<typeof cacheKey>[0] }>();
+      const requests = new Map<string, { key: string; blocks: Unit[]; context: Parameters<typeof cacheKey>[0] }>();
       for (const group of groups.values()) {
         if (!state.admitted.has(group.key)) {
           if (state.remainingBudget <= 0) { state.remaining += group.blocks.length; continue; }
@@ -507,14 +560,14 @@ export class TranslationController implements vscode.Disposable {
     clearTimeout(this.viewportTimer);
     this.viewportTimer = setTimeout(() => {
       if (this.disposed) return;
-      for (const state of this.states.values()) this.render(state);
+      for (const state of this.states.values()) if (state.mode === 'comments') this.render(state);
     }, 100);
   }
 
   private render(state: FileState): void {
     if (state.document.isClosed) return;
     const config = vscode.workspace.getConfiguration(CONFIG_SECTION, state.document.uri);
-    this.renderer.render(state.document, state.blocks, state.translations,
+    if (state.mode === 'comments') this.renderer.render(state.document, state.blocks, state.translations,
       boundedNumber(config, 'visibleBufferLines', 10, 0, 100));
     this.reader.update(state.document.uri.toString(), this.readerModel(state));
   }
@@ -525,9 +578,15 @@ export class TranslationController implements vscode.Disposable {
 
   private readerModel(state: FileState): ReaderModel {
     return { source: state.document.getText(), languageId: state.document.languageId,
+      mode: state.mode,
+      ...(state.mode === 'markdown' ? { markdown: applyMarkdownTranslations(state.document.getText(), state.markdownChunks, state.translations) } : {}),
       title: state.document.uri.path?.split('/').pop() || '源码', phase: state.phase,
-      translated: state.translations.size, total: state.blocks.length,
+      translated: state.translations.size, total: this.unitCount(state),
       blocks: state.blocks, translations: new Map(state.translations), error: state.error };
+  }
+
+  private unitCount(state: FileState): number {
+    return state.mode === 'markdown' ? state.markdownChunks.length : state.blocks.length;
   }
 
   private async revealSource(uri: string, line: number): Promise<void> {
@@ -541,6 +600,7 @@ export class TranslationController implements vscode.Disposable {
     if (state?.phase === 'demo') { this.reader.update(uri, this.readerModel(state)); return; }
     if (state) { void this.scan(state); return; }
     const document = vscode.workspace.textDocuments.find((item) => item.uri.toString() === uri);
+    if (document?.languageId === 'markdown') { void this.translateMarkdown(document.uri); return; }
     if (document && !document.isClosed && this.checkDocument(document, true)) {
       this.excluded.delete(uri);
       void this.enable(document);
@@ -549,7 +609,7 @@ export class TranslationController implements vscode.Disposable {
 
   private updateStatus(): void {
     const document = this.getActiveDocument();
-    if (!document || !this.parser.supportsLanguage(document.languageId)) { this.status.hide(); return; }
+    if (!document || (!this.parser.supportsLanguage(document.languageId) && document.languageId !== 'markdown')) { this.status.hide(); return; }
     const snapshot = this.getSnapshot(document.uri.toString());
     let configurationError: string | undefined;
     try { readSettings(document.uri); } catch (error) { configurationError = error instanceof Error ? error.message : '请检查翻译设置。'; }
@@ -560,11 +620,18 @@ export class TranslationController implements vscode.Disposable {
     else if (snapshot.phase === 'scanning') this.status.text = '$(sync~spin) 译读：扫描 / 查库';
     else if (snapshot.phase === 'translating') this.status.text = `$(sync~spin) 译读 ${snapshot.translated}/${snapshot.total}`;
     else if (snapshot.phase === 'error') this.status.text = '$(warning) 译读：需要处理';
+    else if (snapshot.phase === 'stale') this.status.text = '$(refresh) 译读：内容或设置已更改';
     else if (snapshot.phase === 'demo') this.status.text = '$(globe) 译读：离线示例';
     else this.status.text = `$(globe) 译读 ${snapshot.translated}/${snapshot.total}${snapshot.remaining ? ' · 待继续' : ''}`;
+    if (!snapshot.enabled && document.languageId === 'markdown' && !configurationError) {
+      this.status.text = '$(book) 译读：翻译 Markdown 全文';
+      this.status.command = 'commentTranslator.translateMarkdown';
+    }
     this.status.tooltip = snapshot.enabled
       ? `点击关闭当前文件翻译。SQLite 命中 ${snapshot.cacheHits} 条。${snapshot.error ?? ''}\n命令面板可查看状态、继续翻译或切换自动翻译。`
-      : configurationError ?? '点击开启当前文件翻译。已缓存译文直接显示，仅未命中注释会发送到你配置的模型服务。';
+      : configurationError ?? (document.languageId === 'markdown'
+        ? '点击手动翻译 Markdown 全文。已有缓存直接显示，仅未命中的片段发送到已配置的模型服务。'
+        : '点击开启当前文件翻译。已缓存译文直接显示，仅未命中注释会发送到你配置的模型服务。');
     this.status.show();
   }
 

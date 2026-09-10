@@ -16,6 +16,12 @@ const PACKAGE_FILES = [
     files: [['LICENSE.txt', 'vscode-oniguruma-LICENSE.txt'], ['NOTICES.txt', 'vscode-oniguruma-NOTICES.txt']],
   },
   { name: 'sql.js', files: [['LICENSE', 'sql.js-LICENSE.txt']] },
+  { name: 'markdown-it', files: [['LICENSE', 'markdown-it-LICENSE.txt']] },
+  { name: 'entities', files: [['LICENSE', 'entities-LICENSE.txt']] },
+  { name: 'linkify-it', files: [['LICENSE', 'linkify-it-LICENSE.txt']] },
+  { name: 'mdurl', files: [['LICENSE', 'mdurl-LICENSE.txt']] },
+  { name: 'punycode.js', files: [['LICENSE-MIT.txt', 'punycode-LICENSE.txt']] },
+  { name: 'uc.micro', files: [['LICENSE.txt', 'uc-micro-LICENSE.txt']] },
 ];
 
 async function findPackage(name) {

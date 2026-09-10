@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 
 const root = resolve(import.meta.dirname, '..');
 await mkdir(resolve(root, '.vscode-test'), { recursive: true });
-for (const name of ['capture-ready', 'capture-done', 'capture-inline-ready', 'capture-inline-done']) await rm(resolve(root, '.vscode-test', name), { force: true });
+for (const name of ['capture-ready', 'capture-done', 'capture-inline-ready', 'capture-inline-done', 'capture-markdown-ready', 'capture-markdown-done']) await rm(resolve(root, '.vscode-test', name), { force: true });
 // Keep Electron's Unix socket path under the macOS length limit.
 const profile = await mkdtemp(process.platform === 'darwin' ? '/tmp/ct-smoke-' : resolve(tmpdir(), 'ct-smoke-'));
 await mkdir(resolve(profile, 'User'), { recursive: true });

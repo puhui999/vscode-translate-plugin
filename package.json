@@ -2,7 +2,7 @@
   "name": "vscode-translate-plugin",
   "displayName": "注释译读 · AI Comment Translator",
   "description": "SQLite 缓存与批量 AI 注释翻译：无边框多行阅读视图、源码注释原位译文，自定义 OpenAI 兼容服务。",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "publisher": "local-dev",
   "license": "MIT",
   "engines": {
@@ -18,7 +18,9 @@
     "注释翻译"
   ],
   "main": "./dist/extension.js",
-  "activationEvents": ["onStartupFinished"],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": false
@@ -72,6 +74,10 @@
       {
         "command": "commentTranslator.openReader",
         "title": "注释译读：打开无边框多行阅读视图"
+      },
+      {
+        "command": "commentTranslator.translateMarkdown",
+        "title": "注释译读：翻译整个 Markdown 文件（只读）"
       }
     ],
     "menus": {
@@ -79,12 +85,30 @@
         {
           "command": "commentTranslator.toggle",
           "group": "navigation@20",
-          "when": "editorTextFocus && !isInDiffEditor"
+          "when": "editorTextFocus && !isInDiffEditor && editorLangId != markdown"
         },
         {
           "command": "commentTranslator.openReader",
           "group": "navigation@21",
-          "when": "editorTextFocus && !isInDiffEditor"
+          "when": "editorTextFocus && !isInDiffEditor && editorLangId != markdown"
+        },
+        {
+          "command": "commentTranslator.translateMarkdown",
+          "group": "navigation@20",
+          "when": "editorTextFocus && editorLangId == markdown && !isInDiffEditor && isWorkspaceTrusted"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "commentTranslator.translateMarkdown",
+          "group": "navigation@20",
+          "when": "!explorerResourceIsFolder && resourceExtname =~ /\\.(md|markdown|mdown)$/i && isWorkspaceTrusted"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "commentTranslator.translateMarkdown",
+          "when": "resourceLangId == markdown"
         }
       ]
     },
@@ -95,7 +119,7 @@
           "type": "boolean",
           "default": true,
           "scope": "machine",
-          "markdownDescription": "配置好服务地址与模型后，自动翻译打开的受支持源码文件（如 Java）；仅未缓存的注释会发送到你配置的服务。开关在重启后保留，关闭后可手动翻译单个文件。"
+          "markdownDescription": "配置好服务地址与模型后，自动翻译打开的受支持源码文件（含 Java、HTML/XML）；仅未缓存的注释会发送到你配置的服务。Markdown 全文需右键手动触发。开关在重启后保留，关闭后可手动翻译单个文件。"
         },
         "commentTranslator.baseUrl": {
           "type": "string",
@@ -148,7 +172,7 @@
           "default": 16000,
           "minimum": 1000,
           "maximum": 200000,
-          "description": "每个请求的注释字符预算。小文件合并成一个请求，大文件自动拆批；这不是模型 token 数。",
+          "description": "每个请求的注释或 Markdown 片段字符预算。小文件合并请求，大文件按完整块拆批；这不是模型 token 数。",
           "scope": "resource"
         },
         "commentTranslator.maxOutputTokens": {
@@ -236,11 +260,13 @@
   },
   "dependencies": {
     "@shikijs/langs": "4.4.3",
+    "markdown-it": "14.3.1",
     "sql.js": "^1.14.2",
     "vscode-oniguruma": "^2.0.1",
     "vscode-textmate": "^9.3.2"
   },
   "devDependencies": {
+    "@types/markdown-it": "14.2.0",
     "@types/node": "^22.20.2",
     "@types/sql.js": "^1.4.11",
     "@types/vscode": "1.85.0",

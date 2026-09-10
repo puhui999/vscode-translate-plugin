@@ -21,7 +21,7 @@ describe('bundled language coverage', () => {
     },
   );
 
-  it.each(['python', 'html', 'xml', 'markdown', 'plaintext', 'unknown'])(
+  it.each(['python', 'markdown', 'plaintext', 'unknown'])(
     'excludes %s without loading WASM or translating any text',
     async (languageId) => {
       const parser = new CommentParser('/does/not/exist.wasm');
@@ -34,7 +34,9 @@ describe('bundled language coverage', () => {
   it('accepts standard aliases and resolves grammar dependencies', () => {
     expect(getLanguageScope('JS')).toBe(getLanguageScope('javascript'));
     expect(getLanguageScope('tsx')).toBe(getLanguageScope('typescriptreact'));
-    expect(getSupportedLanguageIds()).toHaveLength(20);
+    expect(getSupportedLanguageIds()).toHaveLength(22);
+    expect(getLanguageScope('xhtml')).toBe(getLanguageScope('html'));
+    expect(getLanguageScope('xsl')).toBe(getLanguageScope('xml'));
     expect(getGrammar('source.js')).not.toBeNull();
     expect(getGrammar('not-a-bundled-scope')).toBeNull();
   });
@@ -45,8 +47,8 @@ describe('bundled language coverage', () => {
     expect(comment.kind).toBe('inline');
   });
 
-  it('recognizes PHP comments without translating HTML comments', async () => {
-    const blocks = await PARSER.parse('<!-- Excluded -->\n<?php\n// PHP comment\n$x = "// literal"; # Hash comment\n?>', 'php');
+  it('recognizes PHP code comments while its source-only grammar leaves template text alone', async () => {
+    const blocks = await PARSER.parse('<!-- HTML comment -->\n<?php\n// PHP comment\n$x = "// literal"; # Hash comment\n?>', 'php');
     expect(blocks.map((block) => block.text)).toEqual(['PHP comment', 'Hash comment']);
     expect(blocks.map((block) => block.kind)).toEqual(['standalone', 'trailing']);
   });
@@ -76,9 +78,95 @@ describe('bundled language coverage', () => {
     expect((await PARSER.parse('// Brand color\n$brand: red;', 'scss'))[0].text).toBe('Brand color');
   });
 
-  it('recognizes Vue script/style comments and excludes its HTML comments', async () => {
-    const source = '<template>\n<!-- Excluded HTML comment -->\n<div>Hi</div>\n</template>\n<script lang="ts">\n// Vue script\nconst name = "// literal";\n</script>\n<style>\n/* Vue style */\n</style>';
-    expect((await PARSER.parse(source, 'vue')).map((block) => block.text)).toEqual(['Vue script', 'Vue style']);
+  it('recognizes Vue template, script and style comments', async () => {
+    const source = '<template>\n<!-- Vue template -->\n<div>Hi</div>\n</template>\n<script lang="ts">\n// Vue script\nconst name = "// literal";\n</script>\n<style>\n/* Vue style */\n</style>';
+    expect((await PARSER.parse(source, 'vue')).map((block) => block.text)).toEqual(['Vue template', 'Vue script', 'Vue style']);
+  });
+});
+
+describe('HTML and XML comments', () => {
+  it.each(['html', 'xml'])('extracts single and multiline %s comments with exact locations', async (languageId) => {
+    const source = '<root>\n\t<!-- First line.\r\n\t  Second line.\r\n\t-->\n<item/> <!-- After element. -->\n</root>';
+    const blocks = await PARSER.parse(source, languageId);
+    expect(blocks.map((block) => block.text)).toEqual(['First line.\n  Second line.', 'After element.']);
+    expect(blocks[0].rawText).toBe('<!-- First line.\r\n\t  Second line.\r\n\t-->');
+    expect(blocks[0].start).toEqual({ line: 1, character: 1 });
+    expect(blocks[0].end).toEqual({ line: 3, character: 4 });
+    expect(blocks.map((block) => block.kind)).toEqual(['standalone', 'trailing']);
+  });
+
+  it.each(['html', 'xml'])('keeps adjacent and inline %s comments separate from surrounding tags', async (languageId) => {
+    const source = '<!-- First --><!-- Second -->\n<item><!-- Inside --></item>';
+    const blocks = await PARSER.parse(source, languageId);
+    expect(blocks.map((block) => block.rawText)).toEqual(['<!-- First -->', '<!-- Second -->', '<!-- Inside -->']);
+    expect(blocks.map((block) => block.text)).toEqual(['First', 'Second', 'Inside']);
+    expect(blocks.map((block) => block.kind)).toEqual(['standalone', 'standalone', 'inline']);
+  });
+
+  it.each(['html', 'xml'])('ignores attributes and encoded comment-shaped text in %s', async (languageId) => {
+    const source = '<root double="<!-- literal -->" single=\'<!-- another literal -->\'>\n&lt;!-- encoded text --&gt;\n<!-- Real comment. -->\n</root>';
+    expect((await PARSER.parse(source, languageId)).map((block) => block.text)).toEqual(['Real comment.']);
+  });
+
+  it('excludes XML CDATA, processing instructions, declarations and entity attribute strings', async () => {
+    const source = '<?xml version="1.0"?>\n<?render\n text="<!-- PI text -->"\n?>\n<!DOCTYPE root [\n <!ENTITY sample "<!-- entity text -->">\n <!-- DTD comment. -->\n]>\n<root><![CDATA[\n<!-- CDATA text -->\n// CDATA literal\n]]><!-- Actual comment. --></root>';
+    expect((await PARSER.parse(source, 'xml')).map((block) => block.text)).toEqual(['DTD comment.', 'Actual comment.']);
+  });
+
+  it('supports HTML script/style comments while excluding JavaScript, CSS and JSON strings', async () => {
+    const source = '<!DOCTYPE html>\n<!-- Template comment. -->\n<script>\nconst html = "<!-- literal -->";\n// Script comment.\n/* Block script comment. */\n</script>\n<style>\n/* Style comment. */\na::after { content: "<!-- literal --> /* literal */"; }\n</style>\n<script type="application/ld+json">{"value":"<!-- literal -->"}</script>';
+    expect((await PARSER.parse(source, 'html')).map((block) => block.text)).toEqual([
+      'Template comment.', 'Script comment.', 'Block script comment.', 'Style comment.',
+    ]);
+  });
+
+  it('registers Vue interpolation/directive injections so markup-like strings stay literal', async () => {
+    const source = '<template>\n<div :title="\'<!-- attribute literal -->\'">{{ "<!-- interpolation literal -->" }} {{ "<?render literal" }}</div>\n<!-- Template comment. -->\n</template>\n<script setup lang="ts">\nconst snippet = `<!-- literal -->`;\n// Script comment.\n</script>';
+    expect((await PARSER.parse(source, 'vue')).map((block) => block.text)).toEqual(['Template comment.', 'Script comment.']);
+  });
+
+  it.each(['textarea', 'title', 'xmp', 'iframe', 'noembed', 'noframes'])('does not translate comment-like text inside HTML %s', async (element) => {
+    const source = `<${element} title="a > b">\n<!-- This is displayed text. -->\n</${element}>\n<!-- Actual comment. -->`;
+    expect((await PARSER.parse(source, 'html')).map((block) => block.text)).toEqual(['Actual comment.']);
+  });
+
+  it('keeps plaintext and unclosed HTML raw-text elements untranslated through EOF', async () => {
+    expect(await PARSER.parse('<plaintext>\n<!-- literal -->\n</plaintext>\n<!-- Still literal. -->', 'html')).toEqual([]);
+    expect(await PARSER.parse('<textarea>\n<!-- literal -->', 'html')).toEqual([]);
+  });
+
+  it('does not apply HTML raw-text rules to XML elements', async () => {
+    const blocks = await PARSER.parse('<textarea><!-- XML comment. --></textarea>', 'xml');
+    expect(blocks.map((block) => block.text)).toEqual(['XML comment.']);
+  });
+
+  it('does not treat tag-looking comment content or PI-looking attributes as HTML containers', async () => {
+    const source = '<!-- Mention <textarea> as text. -->\n<div title="<?render literal">\n<!-- Actual comment. -->\n</div>';
+    expect((await PARSER.parse(source, 'html')).map((block) => block.text)).toEqual(['Mention <textarea> as text.', 'Actual comment.']);
+  });
+
+  it('resumes after an HTML raw-text closing tag inside comment-shaped literal text', async () => {
+    const source = '<textarea><!-- literal </textarea> -->\n<!-- Actual comment. -->';
+    expect((await PARSER.parse(source, 'html')).map((block) => block.text)).toEqual(['Actual comment.']);
+  });
+
+  it('excludes unknown HTML processing instructions across lines', async () => {
+    const source = '<?render\n value="<!-- PI literal -->"\n <!-- More PI content. -->\n?>\n<!-- Actual comment. -->';
+    expect((await PARSER.parse(source, 'html')).map((block) => block.text)).toEqual(['Actual comment.']);
+    expect(await PARSER.parse('<?render\n<!-- Unterminated PI literal. -->', 'html')).toEqual([]);
+  });
+
+  it.each(['html', 'xml'])('ignores empty %s comment shells and retains unfinished comments', async (languageId) => {
+    expect(await PARSER.parse('<!---->\n<!-- \n -->', languageId)).toEqual([]);
+    const blocks = await PARSER.parse('<!-- Unfinished\n  More details.', languageId);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].rawText).toBe('<!-- Unfinished\n  More details.');
+    expect(blocks[0].text).toBe('Unfinished\n More details.');
+  });
+
+  it('preserves markup and documentation content inside an XML comment for validation', async () => {
+    const [block] = await PARSER.parse('<!-- <summary>Load the profile.</summary>\n@param userId The user ID. -->', 'xml');
+    expect(block.text).toBe('<summary>Load the profile.</summary>\n@param userId The user ID.');
   });
 });
 

@@ -249,3 +249,66 @@ describe('source-position translation formatting', () => {
     } finally { parser.dispose(); }
   });
 });
+
+describe('HTML/XML comment formatting', () => {
+  it.each([
+    ['<!--Hello.-->', '你好。', '<!--你好。-->'],
+    ['<!-- Hello. -->', '<!-- 你好。 -->', '<!-- 你好。 -->'],
+    ['<!--\n  Hello.\n\n    More details.\n-->', '你好。\n更多信息。', '<!--\n  你好。\n\n    更多信息。\n-->'],
+    ['<!-- First.\n  Last. -->', '第一行。\n最后一行。', '<!-- 第一行。\n  最后一行。 -->'],
+    ['<!--\n * Literal star.\n-->', '* 普通星号。', '<!--\n * 普通星号。\n-->'],
+  ])('restores the complete markup shell in the reader: %s', (rawText, translation, expected) => {
+    expect(formatTranslation(comment(rawText), translation)).toBe(expected);
+  });
+
+  it('removes container indentation only in the reader and keeps the source rows intact', () => {
+    const block = comment('<!--\r\n\t  First.\r\n\t\r\n\t    Last.\r\n\t-->', 1);
+    const translation = '第一行。\n最后一行。';
+    expect(formatTranslation(block, translation)).toBe('<!--\n  第一行。\n\n    最后一行。\n-->');
+    expect(formatSourceTranslation(block, translation)).toEqual(['<!--', '\t  第一行。', '\t', '\t    最后一行。', '\t-->']);
+  });
+
+  it('does not duplicate a wrapped markup translation and keeps inline delimiters on the source line', () => {
+    const block = comment('<!-- First. -->', 15);
+    expect(formatTranslation(block, '<!-- 第一行。\n第二行。 -->')).toBe('<!-- 第一行。\n第二行。 -->');
+    expect(formatSourceTranslation(block, '<!-- 第一行。\n第二行。 -->')).toEqual(['<!-- 第一行。 第二行。 -->']);
+  });
+
+  it('distributes source markup prose over existing rows without losing either delimiter', () => {
+    const block = comment('<!-- First.\n\tSecond.\n\tThird. -->', 4);
+    expect(formatSourceTranslation(block, '先读取缓存。再加载资料。最后返回结果。')).toEqual([
+      '<!-- 先读取缓存。', '\t再加载资料。', '\t最后返回结果。 -->',
+    ]);
+  });
+
+  it('retains XML tags and attribute values inside a comment', () => {
+    const block = comment('<!-- <summary>Load profile.</summary>\n    <param name="userId">User ID.</param> -->', 4);
+    const translated = '<summary>加载资料。</summary>\n<param name="userId">用户标识。</param>';
+    expect(formatSourceTranslation(block, translated)).toEqual([
+      '<!-- <summary>加载资料。</summary>', '    <param name="userId">用户标识。</param> -->',
+    ]);
+  });
+
+  it('keeps unfinished markup comments unfinished and preserves empty source shells', () => {
+    const block = comment('<!-- First.\n  Second.');
+    expect(formatTranslation(block, '第一行。\n第二行。')).toBe('<!-- 第一行。\n  第二行。');
+    expect(formatSourceTranslation(block, '第一行。\n第二行。')).toEqual(['<!-- 第一行。', '  第二行。']);
+    expect(formatSourceTranslation(comment('<!---->'), '译文。')).toEqual([]);
+    expect(formatSourceTranslation(comment('<!-- Body. -->'), '<!---->')).toEqual([]);
+    expect(formatTranslation(comment('<!---->'), '译文。')).toBe('<!--译文。-->');
+  });
+
+  it.each(['html', 'xml', 'vue'])('formats markup comments obtained from the real %s grammar', async (languageId) => {
+    const parser = new CommentParser(createRequire(import.meta.url).resolve('vscode-oniguruma/release/onig.wasm'));
+    const raw = '<!-- First.\n\tSecond. -->';
+    try {
+      const element = languageId === 'vue' ? 'template' : 'root';
+      const blocks = await parser.parse(`<${element}>\n\t${raw}\n</${element}>`, languageId);
+      expect(blocks).toHaveLength(1);
+      const block = blocks[0];
+      expect(formatSourceTranslation(block, '第一行。\n第二行。')).toEqual(['<!-- 第一行。', '\t第二行。 -->']);
+      expect(formatTranslation(block, '第一行。\n第二行。')).toBe('<!-- 第一行。\n第二行。 -->');
+      expect(block.rawText).toBe(raw);
+    } finally { parser.dispose(); }
+  });
+});

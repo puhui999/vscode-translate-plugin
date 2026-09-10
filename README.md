@@ -9,6 +9,7 @@
 3. 执行 **注释译读：打开离线效果示例（无需 API）**，可直接看到无边框多行阅读视图；点击“返回源码”可体验原位译文。示例使用预置译文，不调用模型、不写入翻译缓存。
 4. 执行 **注释译读：打开翻译设置**，填写服务地址、模型名和 API Key；也可使用 **配置模型服务** 向导。
 5. 打开 Java 等受支持的源码文件，即可自动扫描、查库并显示译文。配置完成时已经打开的文件也会自动处理，无需额外执行翻译命令。
+6. 对于 Markdown，在编辑器中或资源管理器的 `.md` 文件上右键，选择 **注释译读：翻译整个 Markdown 文件（只读）**。
 
 `commentTranslator.automatic` 默认开启，配置有效的服务地址和模型后生效；设置在 VS Code 重启后保留。缺少配置或工作区不受信任时不发送请求，状态栏会提示原因。只处理当前打开并可见的源码及正在阅读的源文件，不扫描整个工作区。
 
@@ -54,7 +55,7 @@
 ## SQLite 缓存
 
 - 数据库位于 VS Code 为此扩展分配的 `globalStorageUri/translations.sqlite`，不存入项目仓库。
-- 保存规范化注释原文、完整译文、代码语言、服务地址、模型、目标语言、Prompt 版本 / 哈希和时间信息。
+- 保存规范化注释或 Markdown 片段原文、完整译文、语言、服务地址、模型、目标语言、Prompt 版本 / 哈希和时间信息；两种翻译模式的缓存分别标识。
 - 缓存键包含原文、代码语言、服务、模型、目标语言和 Prompt；相同条件下可跨文件、跨窗口重启复用。
 - 关闭文件只释放编辑器资源和文件引用，保留数据库译文。
 - 默认不按时间过期，容量上限 10,000 条；到达上限后淘汰较少使用的条目。
@@ -62,7 +63,7 @@
 - 每次扫描前同步磁盘快照，其他窗口已经保存的译文也能复用。异常崩溃遗留的 `.lock` 会报错，确认其他实例已经退出后可删除该锁文件；不会自动覆盖或删除损坏的数据库。
 - 执行 **注释译读：清除翻译缓存** 会关闭自动模式、取消当前翻译并清空持久缓存；再次开启时重新请求。删除 API Key 也会关闭自动模式，避免删除后立即发起无凭据请求。
 
-数据库包含注释原文和译文，属于本机文件；不会上传到插件服务器，也不包含 API Key。默认不随 Settings Sync 同步数据库。
+数据库包含待翻译原文和译文，属于本机文件；不会上传到插件服务器，也不包含 API Key。默认不随 Settings Sync 同步数据库。
 
 ## 显示规则
 
@@ -74,7 +75,7 @@
 | 代码后的行尾注释 | 在代码行末追加译文 |
 | 夹在代码之间的块注释 | 在所在结束行的行末显示译文，悬浮原注释可看全文 |
 
-译文保留原注释的符号和结构：例如 `//`、`///`、`//!`、`#`、`--`、`/* … */`、`/** … */` 以及块内每行的 `*`。注释外壳由本地根据原文恢复；文档标签、参数名、类型和 XML 文档标签由翻译结果校验保护。标签缺失或被改写时，只重试对应注释，不将错误结果写入成功缓存。旧版本缓存通过同样的文档结构校验后直接复用。
+译文保留原注释的符号和结构：例如 `//`、`///`、`//!`、`#`、`--`、`/* … */`、`/** … */`、`<!-- … -->` 以及块内每行的 `*`。注释外壳由本地根据原文恢复；文档标签、参数名、类型和 XML 文档标签由翻译结果校验保护。标签缺失或被改写时，只重试对应注释，不将错误结果写入成功缓存。旧版本缓存通过同样的文档结构校验后直接复用。
 
 例如，文档注释的译文仍显示为：
 
@@ -99,11 +100,22 @@ VS Code 的稳定扩展 API 不提供可插入原生源码编辑器的多行虚�
 
 ## 语言范围
 
-内置 20 个 VS Code 语言 ID：JavaScript、TypeScript、JSX、TSX、Java、C、C++、C#、Go、Rust、Kotlin、Swift、Dart、PHP、Ruby、Shell、SQL、CSS、SCSS、Vue。
+内置 22 个 VS Code 注释语言 ID：JavaScript、TypeScript、JSX、TSX、Java、C、C++、C#、Go、Rust、Kotlin、Swift、Dart、PHP、Ruby、Shell、SQL、CSS、SCSS、Vue、HTML、XML。
 
-Vue 仅处理已支持的 script / style 注释；HTML 注释跳过。按当前需求排除 Python、HTML/XML 和 Markdown 文件，不将 Python docstring 当成普通注释翻译。扩展以编辑器的语言模式为准；例如 Kotlin 文件可能需要安装语言扩展或手动选择语言模式。
+HTML、XML 和 Vue 模板支持 `<!-- ... -->` 注释；HTML/Vue 的 script、style 中继续识别受支持的代码注释。标签正文、属性值、XML CDATA、DOCTYPE 和处理指令保持原样。Python 暂不支持，也不将 Python docstring 当成普通注释翻译。扩展以编辑器的语言模式为准；例如 Kotlin 文件可能需要安装语言扩展或手动选择语言模式。
 
 解析器使用随插件打包的 TextMate 语法，维护从文件开头开始的跨行状态；不依赖 VS Code 未公开的 token API，不用全局正则猜测注释。语法本身仍可能遇到罕见扩展语法，未通过解析的文件会显示错误。
+
+## Markdown 全文翻译
+
+在 Markdown 编辑器内或资源管理器的 `.md`、`.markdown`、`.mdown` 文件上右键，选择 **翻译整个 Markdown 文件（只读）**。文件需使用 Markdown 语言模式。此操作始终打开只读阅读视图，不受 `displayMode` 设置影响，也不会覆盖原文件。
+
+- 翻译标题、段落、列表、引用及表格中的自然语言，按 Markdown 排版显示；顶部可切换原文/译文、重新翻译和返回源码。
+- 保留 Markdown 格式、代码块、行内代码、链接目标、图片地址、引用定义、原始 HTML 和 YAML/TOML 元数据。完整代码或元数据块无需请求；快捷引用链接的标识保留原文。
+- 全文先查 SQLite；相同段落去重，未命中片段合并请求，长文按完整块串行拆批。手动全文翻译不受 500 条自动注释上限影响，仍共用最多 3 个文件并发的队列。
+- 结构校验拒绝丢失标题、列表、表格、代码或链接目标的结果。成功片段先显示并缓存，未完成部分暂时保留原文；重试复用已成功缓存。
+- 打开 Markdown 本身不会发送请求。已翻译文件修改或服务设置改变后，旧译文会撤下，并提示手动重新翻译；未改变的段落仍可命中缓存。
+- 单个完整段落、列表或表格超过 `maxBatchChars` 时会提示其行号，请根据模型容量提高上限；插件不会截断内容。阅读视图不执行原始 HTML，链接显示标签和地址提示，图片显示替代文字与地址，不加载远程资源。
 
 ## 配置
 
@@ -132,7 +144,7 @@ Vue 仅处理已支持的 script / style 注释；HTML 注释跳过。按当前�
 | `targetLanguage` | 简体中文 | 目标语言 |
 | `prompt` | 空 | 附加术语和翻译要求 |
 | `responseFormat` | `text` | 通用模式；也可选择服务支持的 `json_object` 或 `json_schema` |
-| `maxBatchChars` | 16000 | 每批 JSON 注释数据的字符预算，并非 token 数 |
+| `maxBatchChars` | 16000 | 每批 JSON 注释或 Markdown 片段的字符预算，并非 token 数 |
 | `maxOutputTokens` | 8192 | 输出 token 上限，需符合所选模型限制 |
 | `tokenLimitParameter` | `max_tokens` | 可改用 `max_completion_tokens`，或选择 `omit` 不发送 token 上限 |
 | `timeoutSeconds` | 60 | 单次请求超时 |
@@ -177,6 +189,8 @@ npm run package
 - `src/controller.ts`：启停、查库、请求和文件变更的一致性。
 - `src/renderer.ts`：源码注释的逐行视觉替换、原文悬浮与编辑保护。
 - `src/commentFormat.ts`：按原注释恢复译文的注释符号和缩进。
+- `src/markdown.ts`：Markdown 分块、源码偏移、结构校验及完整译文重组。
+- `src/markdownReaderContent.ts`：Markdown 排版、只读原文/译文切换。
 - `src/reader.ts` / `src/readerContent.ts`：无边框多行阅读视图、原始行号映射与消息校验。
 
 参考：[VS Code Webview API](https://code.visualstudio.com/api/extension-guides/webview)、[原生可变行高尚未公开给扩展](https://github.com/microsoft/vscode/issues/246822)、[SecretStorage](https://code.visualstudio.com/api/references/vscode-api#SecretStorage)、[Chat Completions](https://developers.openai.com/api/reference/resources/chat)、[vscode-textmate](https://github.com/microsoft/vscode-textmate)、[sql.js](https://github.com/sql-js/sql.js)。第三方许可随安装包保存在 `dist/licenses/`。

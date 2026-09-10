@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { setImmediate } from 'node:timers/promises';
 import { loadWASM, OnigScanner, OnigString } from 'vscode-oniguruma';
 import { INITIAL, Registry, type IToken, type StateStack } from 'vscode-textmate';
-import { getGrammar, getLanguageScope } from './grammars';
+import { getGrammar, getGrammarInjections, getLanguageScope } from './grammars';
 
 /** A source position using VS Code's zero-based UTF-16 coordinates. */
 export interface CommentPosition {
@@ -90,7 +90,7 @@ function getCommentScope(token: IToken): CommentScope | undefined {
     if (!/^comment(?:\.|$)/.test(scope)) {
       continue;
     }
-    if (insideString || /(?:^|\.)(?:html|xml|shebang)(?:\.|$)/.test(scope)) {
+    if (insideString || /(?:^|\.)shebang(?:\.|$)/.test(scope)) {
       return undefined;
     }
     return {
@@ -110,10 +110,30 @@ function recordCode(extent: CodeExtent, tokenText: string, start: number): void 
   }
 }
 
+function markupTextEnd(token: IToken, tokenText: string, source: string, offset: number): number | undefined {
+  // HTML's grammar treats RCDATA/raw text and unknown processing instructions
+  // as normal markup. Use only actual tag tokens to guard these text regions.
+  if (token.scopes.some((scope) => /^(?:string|comment|source)(?:\.|$)/.test(scope))) return undefined;
+  if (source.startsWith('<?', offset)) {
+    const end = source.indexOf('?>', offset + 2);
+    return end < 0 ? source.length : end + 2;
+  }
+  if (tokenText !== '>' || !token.scopes.includes('punctuation.definition.tag.end.html')) return undefined;
+  const element = token.scopes.map((scope) => scope.match(/^meta\.tag\..*\.(textarea|title|xmp|iframe|noembed|noframes|plaintext)\.start\.html$/)?.[1]).find(Boolean);
+  if (!element) return undefined;
+  if (element === 'plaintext') return source.length;
+  const closingTag = new RegExp(`</${element}(?=[\\s/>])[^>]*>`, 'gi');
+  closingTag.lastIndex = offset + tokenText.length;
+  const closing = closingTag.exec(source);
+  return closing ? closing.index + closing[0].length : source.length;
+}
+
 function normalizeComment(rawText: string, lineStyle: boolean): string {
   let content = rawText.replace(/\r\n?/g, '\n');
   if (lineStyle) {
     content = content.replace(/^[\t ]*(?:\/\/[/!]?|--|#)[\t ]?/gm, '');
+  } else if (content.startsWith('<!--')) {
+    content = content.slice(4, content.endsWith('-->') ? -3 : undefined);
   } else if (content.startsWith('/*')) {
     content = content.slice(2, content.length >= 4 && content.endsWith('*/') ? -2 : undefined);
     content = content.replace(/^\**!?[\t ]?/, '');
@@ -199,6 +219,8 @@ export class CommentParser {
     let offset = 0;
     let state: StateStack = INITIAL;
     let current: Candidate | undefined;
+    let markupExcludedUntil = 0;
+    const htmlMarkup = scopeName === 'text.html.basic' || scopeName === 'text.html.vue';
 
     for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
       if (lineIndex % YIELD_EVERY_LINES === 0) {
@@ -226,7 +248,14 @@ export class CommentParser {
         const start = Math.min(token.startIndex, line.length);
         const end = Math.min(token.endIndex, line.length);
         const tokenText = line.slice(start, end);
-        const scope = lineIndex === 0 && line.startsWith('#!') ? undefined : getCommentScope(token);
+        if (htmlMarkup && offset + start >= markupExcludedUntil) {
+          markupExcludedUntil = markupTextEnd(token, tokenText, text, offset + start) ?? markupExcludedUntil;
+        }
+        let scope = offset + start < markupExcludedUntil || (lineIndex === 0 && line.startsWith('#!'))
+          ? undefined : getCommentScope(token);
+        // A skipped raw-text region can leave the HTML grammar inside a false
+        // comment. Never begin a markup candidate halfway through that scope.
+        if (scope && !current && /\.(?:html|xml)(?:\.|$)/.test(scope.name) && !text.startsWith('<!--', offset + start)) scope = undefined;
         if (!scope) {
           if (current) {
             candidates.push(current);
@@ -250,7 +279,9 @@ export class CommentParser {
         current.endOffset = offset + end;
         current.documentation ||= scope.documentation;
         // A nested comment's closing delimiter still belongs to its outer block.
-        if (!current.lineStyle && scope.depth === 1 && (tokenText.endsWith('*/') || /^=end\b/.test(tokenText))) {
+        const markupComment = text.startsWith('<!--', current.startOffset);
+        if (!current.lineStyle && scope.depth === 1 && (markupComment
+          ? tokenText.endsWith('-->') : tokenText.endsWith('*/') || /^=end\b/.test(tokenText))) {
           candidates.push(current);
           current = undefined;
         }
@@ -306,6 +337,7 @@ export class CommentParser {
         createOnigString: (value) => new OnigString(value),
       })),
       loadGrammar: async (scopeName) => getGrammar(scopeName),
+      getInjections: getGrammarInjections,
     });
     return this.registry;
   }

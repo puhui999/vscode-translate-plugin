@@ -1,8 +1,11 @@
 import type { CommentBlock } from './parser/commentParser';
 import { formatTranslation } from './commentFormat';
+import { renderMarkdownReaderHtml } from './markdownReaderContent';
 
 /** Source and completed translations displayed in the separate, read-only reader. */
 export interface ReaderModel {
+  mode?: 'comments' | 'markdown';
+  markdown?: string;
   source: string;
   languageId: string;
   title: string;
@@ -121,6 +124,7 @@ function renderRow(row: SourceRow, line: number): string {
 /** Renders an offline, themed HTML reader; all model content remains plain text. */
 export function renderReaderHtml(model: ReaderModel, nonce: string): string {
   if (!/^[A-Za-z0-9+/_=-]+$/.test(nonce)) throw new TypeError('A valid webview nonce is required.');
+  if (model.mode === 'markdown') return renderMarkdownReaderHtml(model, nonce);
   const rows = makeRows(model);
   const title = escapeHtml(model.title);
   const phase = escapeHtml(PHASE_LABELS[model.phase] ?? model.phase);

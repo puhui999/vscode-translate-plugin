@@ -70,6 +70,33 @@ describe('normalizeEndpoint', () => {
 });
 
 describe('TranslationService', () => {
+  it('uses the Markdown contract and preserves formatting, code and link targets', async () => {
+    const source = '# Guide\n\nUse `load()` and [the docs](https://example.test/docs).';
+    const translated = '# 指南\n\n使用 `load()` 并参阅[文档](https://example.test/docs)。';
+    const transport = vi.fn<TranslationTransport>().mockResolvedValue(response([{ id: 'md', text: translated }]));
+    const result = await new TranslationService(transport).translate([{ id: 'md', text: source }], { ...CONFIG, contentKind: 'markdown' }, signal());
+    expect(result.get('md')).toBe(translated);
+    const body = JSON.parse(transport.mock.calls[0][0].body);
+    expect(body.messages[0].content).toContain('Markdown fragment');
+    expect(body.messages[0].content).not.toContain('Translate every code comment');
+    expect(inputItems(transport.mock.calls[0][0])).toEqual([{ id: 'md', text: source }]);
+  });
+
+  it.each([
+    ['# Guide', '指南'],
+    ['Use `load()`.', '使用 `delete()`。'],
+    ['[Docs](https://example.test/docs)', '[文档](https://attacker.test)'],
+    ['- First\n- Second', '- 第一项'],
+  ])('repairs structurally broken Markdown without publishing invalid fragments: %s', async (source, invalid) => {
+    const transport = vi.fn<TranslationTransport>()
+      .mockResolvedValueOnce(response([{ id: 'md', text: invalid }]))
+      .mockResolvedValueOnce(response([{ id: 'md', text: source }]));
+    const onBatch = vi.fn();
+    await new TranslationService(transport).translate([{ id: 'md', text: source }], { ...CONFIG, contentKind: 'markdown' }, signal(), onBatch);
+    expect(transport).toHaveBeenCalledTimes(2);
+    expect(onBatch).toHaveBeenCalledExactlyOnceWith(new Map([['md', source]]));
+  });
+
   it.each([
     ['@param userId The user ID.\n@returns The profile.', '用户标识与资料。', '@param userId 用户标识。\n@returns 用户资料。'],
     ['@param userId The user ID.', '@param 用户 用户标识。', '@param userId 用户标识。'],

@@ -100,6 +100,132 @@ describe('TranslationController integration', () => {
   beforeEach(() => { vi.useFakeTimers(); resetVscodeMock(); });
   afterEach(() => { controller?.dispose(); controller = undefined; vi.useRealTimers(); });
 
+  function markdownFixture(source = '# Hello\n\nHello world.\n\n```js\nconst value = 1;\n```\n') {
+    const document = createDocument(source, 'file:///test/README.md');
+    Object.assign(document, { languageId: 'markdown' });
+    const setup = fixture([], document);
+    controller = setup.controller;
+    setup.service.translate.mockImplementation(async (items, _config, _signal, onBatch) => {
+      const result = new Map(items.map(({ id, text }) => [id, text.replace(/Hello/g, '你好').replace(/world/g, '世界')]));
+      onBatch?.(result);
+      return result;
+    });
+    return setup;
+  }
+
+  it('translates Markdown only on explicit request, forcing a reader even in source display mode', async () => {
+    settings.set('displayMode', 'inline');
+    const setup = markdownFixture();
+    const before = setup.document.getText();
+    controller!.start();
+    events.active.fire(setup.editor);
+    events.visible.fire([setup.editor]);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(setup.service.translate).not.toHaveBeenCalled();
+    await controller!.translateMarkdown();
+    const call = setup.service.translate.mock.calls[0];
+    expect(call[1].contentKind).toBe('markdown');
+    expect(call[0].map(({ text }) => text)).toEqual(['# Hello', 'Hello world.']);
+    expect(setup.parser.parse).not.toHaveBeenCalled();
+    expect(setup.renderer.render).not.toHaveBeenCalled();
+    expect(setup.readerModels.get(setup.document.uri.toString())).toMatchObject({
+      mode: 'markdown', source: before, markdown: before.replace(/Hello/g, '你好').replace(/world/g, '世界'), total: 2, translated: 2, phase: 'ready',
+    });
+    expect(setup.document.getText()).toBe(before);
+    expect(setup.document.version).toBe(1);
+  });
+
+  it('uses the context-menu Markdown URI even when a different source file is active', async () => {
+    const setup = markdownFixture();
+    window.activeTextEditor = createEditor(createDocument('// Other file', 'file:///test/other.ts'));
+    await controller!.translateMarkdown(setup.document.uri);
+    expect(setup.reader.open).toHaveBeenCalledWith(setup.document.uri.toString(), expect.objectContaining({ mode: 'markdown' }));
+    expect(setup.service.translate).toHaveBeenCalledTimes(1);
+  });
+
+  it('reuses Markdown SQLite records, deduplicates equal paragraphs and isolates comment cache keys', async () => {
+    const setup = markdownFixture('Hello world.\n\nHello world.\n');
+    await controller!.translateMarkdown();
+    expect(setup.service.translate.mock.calls[0][0]).toHaveLength(1);
+    expect(setup.cache.set.mock.calls[0][3]).toMatchObject({ languageId: 'markdown-document' });
+    await controller!.translateMarkdown();
+    expect(setup.service.translate).toHaveBeenCalledTimes(1);
+    expect(controller!.getSnapshot(setup.document.uri.toString())).toMatchObject({ total: 2, translated: 2, cacheHits: 2 });
+  });
+
+  it('translates all Markdown paragraphs without the automatic 500-comment limit', async () => {
+    const setup = markdownFixture(Array.from({ length: 501 }, (_, index) => `Hello world ${index}.`).join('\n\n'));
+    await controller!.translateMarkdown();
+    expect(setup.service.translate.mock.calls[0][0]).toHaveLength(501);
+    expect(controller!.getSnapshot(setup.document.uri.toString())).toMatchObject({ total: 501, translated: 501, remaining: 0 });
+  });
+
+  it('marks edited Markdown stale without background requests, then sends only changed paragraphs on manual retry', async () => {
+    const setup = markdownFixture();
+    controller!.start();
+    await controller!.translateMarkdown();
+    setup.document.replaceText(setup.document.getText().replace('Hello world.', 'Hello changed world.'));
+    events.change.fire({ document: setup.document, contentChanges: [{}] } as unknown as vscode.TextDocumentChangeEvent);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(setup.service.translate).toHaveBeenCalledTimes(1);
+    expect(setup.readerModels.get(setup.document.uri.toString())).toMatchObject({ phase: 'stale', translated: 0, markdown: setup.document.getText() });
+    await controller!.translateMarkdown();
+    expect(setup.service.translate.mock.calls[1][0].map(({ text }) => text)).toEqual(['Hello changed world.']);
+    expect(controller!.getSnapshot(setup.document.uri.toString()).cacheHits).toBe(1);
+  });
+
+  it('marks Markdown settings changes stale instead of starting a new paid request', async () => {
+    const setup = markdownFixture();
+    controller!.start();
+    await controller!.translateMarkdown();
+    changeSetting('model', 'another-model');
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(controller!.getSnapshot(setup.document.uri.toString()).phase).toBe('stale');
+    expect(setup.service.translate).toHaveBeenCalledTimes(1);
+    await controller!.translateMarkdown();
+    expect(setup.service.translate.mock.calls[1][1].model).toBe('another-model');
+  });
+
+  it('focuses a pending Markdown request on repeated right clicks and ignores its results after an edit', async () => {
+    const setup = markdownFixture('Hello world.');
+    const pending = lateService(setup.service);
+    const first = controller!.translateMarkdown();
+    await settle();
+    await controller!.translateMarkdown(setup.document.uri);
+    expect(setup.service.translate).toHaveBeenCalledTimes(1);
+    setup.document.replaceText('New source.');
+    events.change.fire({ document: setup.document, contentChanges: [{}] } as unknown as vscode.TextDocumentChangeEvent);
+    pending.complete();
+    await first;
+    expect(setup.cache.set).not.toHaveBeenCalled();
+    expect(setup.readerModels.get(setup.document.uri.toString())).toMatchObject({ phase: 'stale', markdown: 'New source.' });
+  });
+
+  it('closes the Markdown reader and cancels late results when its source document closes', async () => {
+    const setup = markdownFixture('Hello world.');
+    const pending = lateService(setup.service);
+    const first = controller!.translateMarkdown();
+    await settle();
+    setup.document.isClosed = true;
+    events.close.fire(setup.document as unknown as vscode.TextDocument);
+    pending.complete();
+    await first;
+    expect(setup.cache.set).not.toHaveBeenCalled();
+    expect(setup.reader.closeFile).toHaveBeenCalledWith(setup.document.uri.toString());
+  });
+
+  it('requires a trusted Markdown file for the whole-file command', async () => {
+    const setup = markdownFixture();
+    workspace.isTrusted = false;
+    await controller!.translateMarkdown();
+    workspace.isTrusted = true;
+    Object.assign(setup.document, { languageId: 'typescript' });
+    await controller!.translateMarkdown();
+    await controller!.translateMarkdown({ scheme: 'https' } as vscode.Uri);
+    expect(setup.service.translate).not.toHaveBeenCalled();
+    expect(setup.reader.open).not.toHaveBeenCalled();
+  });
+
   it('remains disabled when the automatic preference is off until explicitly enabled', async () => {
     settings.set('automatic', false);
     const setup = fixture();

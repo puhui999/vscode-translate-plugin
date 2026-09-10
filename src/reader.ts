@@ -115,7 +115,7 @@ export class TranslationReader implements vscode.Disposable {
   public clearFile(uri: string): void {
     const model = this.entries.get(uri)?.model;
     if (model) {
-      this.update(uri, { ...model, phase: 'off', translated: 0, translations: new Map(), error: undefined });
+      this.update(uri, { ...model, phase: 'off', translated: 0, translations: new Map(), markdown: model.mode === 'markdown' ? model.source : undefined, error: undefined });
     }
   }
 
@@ -252,6 +252,8 @@ function copyModel(model: ReaderModel): ReaderModel {
 
 function fingerprintModel(model: ReaderModel): string {
   return createHash('sha256').update(JSON.stringify({
+    mode: model.mode ?? 'comments',
+    markdown: model.markdown,
     source: model.source,
     languageId: model.languageId,
     title: model.title,

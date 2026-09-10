@@ -246,6 +246,52 @@ describe('TranslationReader', () => {
     reader.closeFile(URI);
   });
 
+  it('includes Markdown document changes and reader mode in the rendering fingerprint', () => {
+    const { reader } = createReader();
+    const uri = 'file:///test/README.md';
+    const original = model({ mode: 'markdown', source: '# Heading\n\nOriginal.', markdown: '# 标题\n\n初版译文。', languageId: 'markdown', title: 'README.md', blocks: [], translations: new Map() });
+    reader.open(uri, original);
+    const panel = HOST.panels[0];
+    const firstNonce = nonce();
+    panel.emit({ type: 'ready', nonce: firstNonce, renderedTranslations: 1, sourceRows: 3, translationRows: 1 });
+    reader.update(uri, { ...original });
+    expect(panel.state.writes).toBe(1);
+    expect(reader.snapshot(uri).ready).toBe(true);
+    const updated = { ...original, markdown: '# 标题\n\n改进译文。' };
+    reader.update(uri, updated);
+    expect(panel.state.writes).toBe(2);
+    expect(nonce()).not.toBe(firstNonce);
+    expect(reader.snapshot(uri).ready).toBe(false);
+    expect((HOST.render.mock.calls.at(-1)![0] as ReaderModel).markdown).toBe(updated.markdown);
+    reader.update(uri, { ...updated, mode: 'comments' });
+    expect(panel.state.writes).toBe(3);
+  });
+
+  it('clears a Markdown translation to its original document and invalidates the old ready state', () => {
+    const { reader, options } = createReader();
+    const uri = 'file:///test/README.md';
+    const original = model({ mode: 'markdown', source: '# Original\n\nSource content.', markdown: '# 译文\n\n翻译内容。', languageId: 'markdown', title: 'README.md', phase: 'error', error: 'Partial failure.', blocks: [] });
+    reader.open(uri, original);
+    const panel = HOST.panels[0];
+    const oldNonce = nonce();
+    panel.emit({ type: 'ready', nonce: oldNonce, renderedTranslations: 1, sourceRows: 3, translationRows: 1 });
+    original.markdown = 'Caller mutation';
+    reader.clearFile(uri);
+    const rendered = HOST.render.mock.calls.at(-1)![0] as ReaderModel;
+    expect(rendered.mode).toBe('markdown');
+    expect(rendered.markdown).toBe(original.source);
+    expect(rendered.source).toBe(original.source);
+    expect(rendered.translations.size).toBe(0);
+    expect(rendered.translated).toBe(0);
+    expect(rendered.phase).toBe('off');
+    expect(rendered.error).toBeUndefined();
+    expect(reader.snapshot(uri)).toEqual({ open: true, ready: false, translated: 0, sourceLines: 3 });
+    panel.emit({ type: 'ready', nonce: oldNonce, renderedTranslations: 1, sourceRows: 3, translationRows: 1 });
+    expect(reader.snapshot(uri).ready).toBe(false);
+    expect(panel.dispose).not.toHaveBeenCalled();
+    expect(options.onRefresh).not.toHaveBeenCalled();
+  });
+
   it('disposes all resources and ignores later opens and retained messages', () => {
     const { reader, options } = createReader();
     reader.open(URI, model());

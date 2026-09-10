@@ -30,6 +30,8 @@ describe('preservesCommentStructure', () => {
     ['<summary>Load the user.</summary>\n<param name="userId">User ID.</param>\n<returns>A profile.</returns>', '<summary>加载用户。</summary>\n<param name="userId">用户标识。</param>\n<returns>用户资料。</returns>'],
     ['See <see cref="User.Find"/> and <a href="https://example.test?a=1&b=2">the docs</a>.', '参见 <see cref="User.Find"/> 和 <a href="https://example.test?a=1&b=2">文档</a>。'],
     ['<summary title="a > b">Compare values.</summary>', '<summary title="a > b">比较值。</summary>'],
+    ['Render <button type="button" aria-label="Save">the save control</button>.', '显示 <button type="button" aria-label="Save">保存控件</button>。'],
+    ['Configure <item xmlns="urn:example" enabled="true"/> before startup.', '启动前配置 <item xmlns="urn:example" enabled="true"/>。'],
   ])('allows translation with preserved structure: %s', (source, translation) => {
     expect(preservesCommentStructure(source, translation)).toBe(true);
   });
@@ -60,6 +62,8 @@ describe('preservesCommentStructure', () => {
     ['<see cref="User.Find"/>', '<see cref="User.Search"/>'],
     ['<returns>A user.</returns>', '<return>用户。</return>'],
     ['<summary>Load.</summary>', '<summary>加载。'],
+    ['Render <button type="button" aria-label="Save">the control</button>.', '显示 <button type="button" aria-label="保存">控件</button>。'],
+    ['Configure <item xmlns="urn:example" enabled="true"/>.', '配置 <item xmlns="urn:example" enabled="false"/>。'],
   ])('rejects missing or changed structure: %s', (source, translation) => {
     expect(preservesCommentStructure(source, translation)).toBe(false);
   });
