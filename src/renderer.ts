@@ -1,84 +1,138 @@
 import * as vscode from 'vscode';
 import type { CommentBlock } from './parser/commentParser';
-import { formatTranslation } from './commentFormat';
+import { formatSourceTranslation } from './commentFormat';
 
-/** Adds unobtrusive single-line previews to the original, editable source document. */
+interface FileRendering {
+  document: vscode.TextDocument;
+  blocks: readonly CommentBlock[];
+  translations: ReadonlyMap<string, string>;
+  bufferLines: number;
+}
+
+/** Visually replaces comment rows while retaining the original, editable source text. */
 export class TranslationRenderer implements vscode.Disposable {
-  private readonly files = new Set<string>();
-  private readonly decoration: vscode.TextEditorDecorationType;
+  private readonly files = new Map<string, FileRendering>();
+  private readonly hidden: vscode.TextEditorDecorationType;
+  private readonly replacement: vscode.TextEditorDecorationType;
+  private readonly originalHover: vscode.TextEditorDecorationType;
+  private readonly listeners: vscode.Disposable[];
 
-  /** Creates borderless decorations without any native comment widgets. */
+  /** Creates independent source and attachment decorations, restoring source while editing. */
   constructor() {
-    this.decoration = vscode.window.createTextEditorDecorationType({
-      after: { color: new vscode.ThemeColor('editorCodeLens.foreground'), margin: '0 0 0 1.5em', fontStyle: 'normal' },
+    // VS Code has no public replacement-text API. Its decoration CSS currently
+    // supports this fixed display rule; translated content never enters CSS.
+    // Keep attachments separate so they cannot inherit display:none.
+    this.hidden = vscode.window.createTextEditorDecorationType({
+      textDecoration: 'none; display: none;',
       rangeBehavior: vscode.DecorationRangeBehavior.ClosedClosed,
     });
+    this.replacement = vscode.window.createTextEditorDecorationType({
+      before: { color: new vscode.ThemeColor('editorCodeLens.foreground'), fontStyle: 'normal', margin: '0',
+        textDecoration: 'none; white-space: pre;' },
+      rangeBehavior: vscode.DecorationRangeBehavior.ClosedClosed,
+    });
+    this.originalHover = vscode.window.createTextEditorDecorationType({
+      rangeBehavior: vscode.DecorationRangeBehavior.ClosedClosed,
+    });
+    this.listeners = [
+      vscode.window.onDidChangeTextEditorSelection((event) => {
+        const state = this.files.get(event.textEditor.document.uri.toString());
+        if (state) this.apply(state);
+      }),
+      vscode.window.onDidChangeActiveTextEditor(() => {
+        for (const state of this.files.values()) this.apply(state);
+      }),
+    ];
   }
 
-  /** Synchronizes visible previews and exposes complete multiline translations on hover. */
-  render(document: vscode.TextDocument, blocks: readonly CommentBlock[], translations: ReadonlyMap<string, string>, bufferLines: number, previewLength: number): void {
-    const uri = document.uri.toString();
-    const editors = vscode.window.visibleTextEditors.filter((editor) => editor.document.uri.toString() === uri);
-    const ranges = editors.flatMap((editor) => editor.visibleRanges);
-    const inline = new Map<number, { entries: { block: CommentBlock; translation: string }[]; ranges: vscode.Range[] }>();
-    for (const block of blocks) {
-      const translation = translations.get(block.id);
-      if (!translation || !ranges.some((range) => block.end.line >= range.start.line - bufferLines && block.start.line <= range.end.line + bufferLines)) continue;
-      const range = new vscode.Range(block.start.line, block.start.character, block.end.line, block.end.character);
-      // Never attach a translation to source text that changed while a request was running.
-      if (document.getText(range) !== block.rawText) continue;
-      const line = block.end.line;
-      const item = inline.get(line) ?? { entries: [], ranges: [] };
-      item.entries.push({ block, translation });
-      item.ranges.push(range);
-      inline.set(line, item);
-    }
-    this.files.add(uri);
-    const decorations: vscode.DecorationOptions[] = [];
-    for (const [line, item] of inline) {
-      const fullText = item.entries.map(({ block, translation }) => formatTranslation(block, translation)).join('\n\n');
-      const contentBudget = Math.max(1, Math.floor(previewLength / item.entries.length));
-      const preview = item.entries.map(({ block, translation }) => {
-        const characters = Array.from(translation.replace(/\s+/g, ' ').trim());
-        const text = characters.length > contentBudget ? `${characters.slice(0, contentBudget).join('')}…` : characters.join('');
-        // Shorten the content first so the comment's closing delimiter is retained.
-        return formatTranslation(block, text).replace(/\s+/g, ' ').trim();
-      }).join(' · ');
-      const end = document.lineAt(line).range.end;
-      decorations.push({ range: new vscode.Range(end, end), hoverMessage: plainMarkdown(fullText), renderOptions: { after: { contentText: `译：${preview}` } } });
-      // Hover over the original comment too; appended text has no editable document range.
-      for (const range of item.ranges) decorations.push({ range, hoverMessage: plainMarkdown(fullText) });
-    }
-    for (const editor of editors) editor.setDecorations(this.decoration, decorations);
+  /** Replaces visible comment rows and shows complete original comments on hover. */
+  render(document: vscode.TextDocument, blocks: readonly CommentBlock[], translations: ReadonlyMap<string, string>, bufferLines: number): void {
+    const state = { document, blocks, translations: new Map(translations), bufferLines };
+    this.files.set(document.uri.toString(), state);
+    this.apply(state);
   }
 
-  /** Removes decorations for one document without changing its text. */
+  /** Removes all visual replacements for a document without changing its text. */
   clearFile(uri: string): void {
     this.files.delete(uri);
     for (const editor of vscode.window.visibleTextEditors) {
-      if (editor.document.uri.toString() === uri) editor.setDecorations(this.decoration, []);
+      if (editor.document.uri.toString() !== uri) continue;
+      editor.setDecorations(this.hidden, []);
+      editor.setDecorations(this.replacement, []);
+      editor.setDecorations(this.originalHover, []);
     }
   }
 
-  /** Retains the diagnostic contract: this renderer never creates comment widgets. */
+  /** Retains the diagnostic contract: source replacements never create comment widgets. */
   widgetCount(_uri: string): number { return 0; }
 
-  /** Releases every native editor resource owned by this renderer. */
+  /** Restores source text and releases all decorations and editor listeners. */
   dispose(): void {
-    for (const uri of this.files) this.clearFile(uri);
-    this.decoration.dispose();
+    for (const uri of this.files.keys()) this.clearFile(uri);
+    for (const listener of this.listeners) listener.dispose();
+    this.hidden.dispose();
+    this.replacement.dispose();
+    this.originalHover.dispose();
+  }
+
+  private apply(state: FileRendering): void {
+    const { document, blocks, translations, bufferLines } = state;
+    if (document.isClosed) return;
+    for (const editor of vscode.window.visibleTextEditors) {
+      if (editor.document.uri.toString() !== document.uri.toString()) continue;
+      const hidden: vscode.DecorationOptions[] = [];
+      const replacements: vscode.DecorationOptions[] = [];
+      const hoverBlocks = new Map<number, Set<CommentBlock>>();
+      for (const block of blocks) {
+        const translation = translations.get(block.id);
+        if (!translation || !editor.visibleRanges.some((range) => block.end.line >= range.start.line - bufferLines && block.start.line <= range.end.line + bufferLines)) continue;
+        const range = new vscode.Range(block.start.line, block.start.character, block.end.line, block.end.character);
+        if (document.getText(range) !== block.rawText) continue;
+        const rows = formatSourceTranslation(block, translation);
+        if (rows.length !== block.end.line - block.start.line + 1) continue;
+        const hoverMessage = originalMarkdown(block.rawText);
+        // Pseudo-element offsets can map onto following code. A row-wide hover
+        // keeps original comments reachable across the whole visual replacement.
+        for (let line = block.start.line; line <= block.end.line; line++) {
+          const originals = hoverBlocks.get(line) ?? new Set<CommentBlock>();
+          originals.add(block);
+          hoverBlocks.set(line, originals);
+        }
+        // Restore the block before editing any of its rows, including adjacent
+        // inline code and multi-cursor selections: translations aren't source.
+        const editing = editor === vscode.window.activeTextEditor && editor.selections.some((selection) =>
+          selection.start.line <= block.end.line && selection.end.line >= block.start.line);
+        if (editing) continue;
+        for (let index = 0; index < rows.length; index++) {
+          const line = block.start.line + index;
+          // Keep native indentation in the source layout (especially tabs),
+          // instead of asking a CSS attachment to reproduce its tab stops.
+          const start = index === 0 ? block.start.character : document.lineAt(line).text.match(/^[\t ]*/)![0].length;
+          const end = line === block.end.line ? block.end.character : document.lineAt(line).range.end.character;
+          const rowRange = new vscode.Range(line, start, line, end);
+          const contentText = index === 0 ? rows[index] : rows[index].slice(start);
+          if (document.getText(rowRange) === contentText) continue;
+          if (end > start) hidden.push({ range: rowRange });
+          replacements.push({ range: new vscode.Range(line, start, line, start), hoverMessage,
+            renderOptions: { before: { contentText } } });
+        }
+      }
+      const hovers = [...hoverBlocks].map(([line, originals]) => ({ range: document.lineAt(line).range,
+        hoverMessage: originalMarkdown([...originals].map((block) => block.rawText).join('\n\n')) }));
+      editor.setDecorations(this.hidden, hidden);
+      editor.setDecorations(this.replacement, replacements);
+      editor.setDecorations(this.originalHover, hovers);
+    }
   }
 }
 
-function plainMarkdown(text: string): vscode.MarkdownString {
+function originalMarkdown(text: string): vscode.MarkdownString {
   const markdown = new vscode.MarkdownString();
   markdown.isTrusted = false;
   markdown.supportHtml = false;
-  // A fence longer than any run in the text prevents model content from escaping
-  // the code block. Monospace rendering retains markers, spaces and blank lines.
   let fenceLength = 3;
   for (const match of text.matchAll(/`+/g)) fenceLength = Math.max(fenceLength, match[0].length + 1);
   const fence = '`'.repeat(fenceLength);
-  markdown.appendMarkdown(`${fence}\n${text}\n${fence}`);
+  markdown.appendMarkdown(`原文\n\n${fence}\n${text}\n${fence}`);
   return markdown;
 }

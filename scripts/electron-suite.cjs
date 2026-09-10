@@ -66,13 +66,20 @@ exports.run = async function run() {
   assert.equal(demo.getText(), before, 'Rendering must not edit source');
 
   const project = path.resolve(__dirname, '..');
-  if (process.env.CAPTURE_TRANSLATION_DEMO) {
+  if (process.env.CAPTURE_TRANSLATION_DEMO || process.env.CAPTURE_TRANSLATION_SOURCE) {
+    if (process.env.CAPTURE_TRANSLATION_SOURCE) {
+      await focusDocument(demo);
+      vscode.window.activeTextEditor.selection = new vscode.Selection(0, 0, 0, 0);
+      await vscode.commands.executeCommand('workbench.action.closeSidebar');
+    }
     await fs.writeFile(path.join(project, '.vscode-test', 'capture-ready'), 'ready');
     const deadline = Date.now() + 45000;
     while (Date.now() < deadline) {
       try { await fs.access(path.join(project, '.vscode-test', 'capture-done')); break; } catch {}
       await new Promise(resolve => setTimeout(resolve, 150));
     }
+    assert.equal(demo.getText(), before, 'Inspecting translated source and original hover must leave source unchanged');
+    if (process.env.CAPTURE_TRANSLATION_SOURCE) await vscode.commands.executeCommand('commentTranslator.openReader');
   }
   // Toggle while the webview itself has focus, rather than an editable source editor.
   await vscode.commands.executeCommand('commentTranslator.toggle');
@@ -212,6 +219,22 @@ exports.run = async function run() {
     assert.equal(pausedJava.isDirty, false);
     await config.update('automatic', false, vscode.ConfigurationTarget.Global);
     await settleConfiguration();
+    if (process.env.CAPTURE_TRANSLATION_SOURCE_INLINE) {
+      const inlineSource = 'const origin = 1;\nconst value = /* An inline comment before executable code. */ origin + 1;\n';
+      const inlineDocument = await vscode.workspace.openTextDocument({ language: 'typescript', content: inlineSource });
+      await focusDocument(inlineDocument);
+      await vscode.commands.executeCommand('commentTranslator.toggle');
+      await waitForReader(api, inlineDocument, 1);
+      await focusDocument(inlineDocument);
+      vscode.window.activeTextEditor.selection = new vscode.Selection(0, 0, 0, 0);
+      await fs.writeFile(path.join(project, '.vscode-test', 'capture-inline-ready'), 'ready');
+      const deadline = Date.now() + 45000;
+      while (Date.now() < deadline) {
+        try { await fs.access(path.join(project, '.vscode-test', 'capture-inline-done')); break; } catch {}
+        await new Promise(resolve => setTimeout(resolve, 150));
+      }
+      assert.equal(inlineDocument.getText(), inlineSource, 'Inline visual replacement and inspection must preserve executable source');
+    }
     console.log('ELECTRON_SMOKE_PASSED: startup activation, borderless reader DOM, unchanged source, custom provider settings, batched request, SQLite reuse, changed-comment-only request, automatic Java opening, persisted setting disable and resume');
   } finally {
     await new Promise(resolve => server.close(resolve));

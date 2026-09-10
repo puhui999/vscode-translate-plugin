@@ -515,8 +515,7 @@ export class TranslationController implements vscode.Disposable {
     if (state.document.isClosed) return;
     const config = vscode.workspace.getConfiguration(CONFIG_SECTION, state.document.uri);
     this.renderer.render(state.document, state.blocks, state.translations,
-      boundedNumber(config, 'visibleBufferLines', 10, 0, 100),
-      boundedNumber(config, 'trailingPreviewLength', 80, 10, 300));
+      boundedNumber(config, 'visibleBufferLines', 10, 0, 100));
     this.reader.update(state.document.uri.toString(), this.readerModel(state));
   }
 

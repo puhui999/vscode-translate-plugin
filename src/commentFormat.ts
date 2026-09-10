@@ -142,3 +142,84 @@ export function formatTranslation(block: CommentBlock, translation: string): str
   rendered[rendered.length - 1] += layout.closing;
   return [...layout.before, ...rendered, ...layout.after].join('\n');
 }
+
+function translationBreaks(text: string): number[] {
+  // Keep documentation declarations and inline syntax intact when redistributing prose.
+  // A long declaration may occupy one long source line rather than lose its operands.
+  const protectedRanges = [...text.matchAll(/^[\t ]*@[A-Za-z][\w-]*[^\n]*|<\/?[A-Za-z][^>]*>|\{@[^\n]*?\}|`+[^`\n]*`+/gm)]
+    .map((match) => ({ start: match.index!, end: match.index! + match[0].length }));
+  const segmenter = new Intl.Segmenter(undefined, { granularity: 'word' });
+  const boundaries = new Set<number>();
+  for (const segment of segmenter.segment(text)) {
+    const end = segment.index + segment.segment.length;
+    if (protectedRanges.some((range) => end > range.start && end < range.end)) continue;
+    // Attach closing punctuation to its word, including CJK sentence punctuation.
+    if (/^[,.;:!?，。；：！？、)\]}>”’]/u.test(text.slice(end))) continue;
+    boundaries.add(end);
+  }
+  boundaries.add(text.length);
+  return [...boundaries].sort((left, right) => left - right);
+}
+
+function distributeSourceBody(translated: string[], count: number): string[] {
+  const meaningful = translated.map((line) => line.trim()).filter(Boolean);
+  if (meaningful.length === count) return meaningful;
+  if (count === 1) return [meaningful.join(' ')];
+  const text = meaningful.join('\n');
+  const boundaries = translationBreaks(text);
+  const result: string[] = [];
+  let start = 0;
+  for (let row = 0; row < count; row += 1) {
+    while (/\s/u.test(text[start] ?? '') && start < text.length) start += 1;
+    if (start >= text.length) { result.push(''); continue; }
+    if (row === count - 1) { result.push(text.slice(start).replace(/\n/g, ' ')); break; }
+    const remaining = count - row;
+    const available = boundaries.filter((end) => end > start && text.slice(start, end).trim());
+    // Leave one segment for each later line when enough word boundaries exist.
+    const limit = Math.max(1, available.length - remaining + 1);
+    const choices = available.slice(0, limit);
+    const desiredLength = (text.length - start) / remaining;
+    const score = (end: number): number => {
+      const sentenceEnd = /[.!?。！？；;]\s*$/u.test(text.slice(start, end));
+      const lineEnd = text[end] === '\n' || text[end - 1] === '\n';
+      return Math.abs(end - start - desiredLength) - desiredLength * (lineEnd ? 0.3 : sentenceEnd ? 0.2 : 0);
+    };
+    const end = choices.reduce((best, candidate) => score(candidate) < score(best) ? candidate : best);
+    result.push(text.slice(start, end).trim().replace(/\n/g, ' '));
+    start = end;
+  }
+  return result;
+}
+
+/** Fits translated prose into the source comment's existing physical lines, preserving its exact shell. */
+export function formatSourceTranslation(block: CommentBlock, translation: string): readonly string[] {
+  const normalized = normalizeNewlines(translation);
+  if (!normalized.trim()) return [];
+  // rawText starts at the comment marker; continuation lines retain the source's outer indentation.
+  const originalLines = normalizeNewlines(block.rawText).split('\n');
+  const layout = parseLayout(originalLines.join('\n'));
+  if (!layout) return [];
+  // The outer layout does not describe nested delimiters. Keep their source
+  // visible rather than replacing an inner comment shell as ordinary prose.
+  if (layout.family === 'block' && layout.rows.some((row) => /\/\*|\*\//.test(row.text))) return [];
+  const slots = layout.rows.flatMap((row, index) => {
+    if (!row.text.trim()) return [];
+    const leading = row.text.match(/^[\t ]*/)![0].length;
+    return [{
+      line: layout.before.length + index,
+      start: (index === 0 ? layout.opening.length : 0) + row.prefix.length + leading,
+      length: row.text.trimEnd().length - leading,
+    }];
+  });
+  if (!slots.length) return [];
+  const wrapped = parseLayout(normalized.trim());
+  const translated = wrapped?.family === layout.family ? wrapped.rows.map((row) => row.text) : normalized.split('\n');
+  if (!translated.some((line) => line.trim())) return [];
+  const assigned = distributeSourceBody(translated, slots.length);
+  const result = [...originalLines];
+  for (const [index, slot] of slots.entries()) {
+    const original = originalLines[slot.line];
+    result[slot.line] = original.slice(0, slot.start) + assigned[index] + original.slice(slot.start + slot.length);
+  }
+  return result;
+}

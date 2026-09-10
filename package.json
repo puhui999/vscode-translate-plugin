@@ -1,8 +1,8 @@
 {
   "name": "vscode-translate-plugin",
   "displayName": "注释译读 · AI Comment Translator",
-  "description": "SQLite 缓存与批量 AI 注释翻译：无边框多行源码阅读视图、原生行尾预览，自定义 OpenAI 兼容服务。",
-  "version": "0.2.3",
+  "description": "SQLite 缓存与批量 AI 注释翻译：无边框多行阅读视图、源码注释原位译文，自定义 OpenAI 兼容服务。",
+  "version": "0.2.4",
   "publisher": "local-dev",
   "license": "MIT",
   "engines": {
@@ -203,7 +203,8 @@
           "default": 80,
           "minimum": 10,
           "maximum": 300,
-          "description": "行尾译文正文预览字符预算，注释符号和结束标记另行保留；悬浮可查看完整格式。",
+          "description": "旧版行尾译文的预览长度。原位替换模式不截断译文，此设置不再生效。",
+          "deprecationMessage": "源码视图已改用原位译文，此预览长度设置不再生效。",
           "scope": "resource"
         },
         "commentTranslator.displayMode": {
@@ -216,9 +217,9 @@
           "scope": "resource",
           "enumDescriptions": [
             "开启当前文件翻译时打开独立只读阅读视图，显示无边框多行译文；点击行号返回源码。",
-            "留在原生编辑器，在注释行末显示单行译文预览，悬浮查看完整多行文本。"
+            "留在原生编辑器，在原注释位置逐行显示译文，悬停查看原文；光标进入注释所在行时恢复原文以便编辑。"
           ],
-          "description": "译文显示方式。原生编辑器中不会创建评论框，多行排版在独立阅读视图中提供。"
+          "description": "译文显示方式。阅读视图自由排版；源码视图在已有注释行中显示译文，不改变源文件、行号和保存内容。"
         }
       }
     }

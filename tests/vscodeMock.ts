@@ -64,6 +64,7 @@ export const events = {
   active: new MockEvent<vscode.TextEditor | undefined>(),
   visible: new MockEvent<readonly vscode.TextEditor[]>(),
   ranges: new MockEvent<vscode.TextEditorVisibleRangesChangeEvent>(),
+  selection: new MockEvent<vscode.TextEditorSelectionChangeEvent>(),
   configuration: new MockEvent<vscode.ConfigurationChangeEvent>(),
 };
 
@@ -116,6 +117,7 @@ export function createEditor(document: MockDocument): vscode.TextEditor {
   return {
     document,
     visibleRanges: [new Range(0, 0, 100, 0)],
+    selections: [],
     setDecorations: vi.fn(),
   } as unknown as vscode.TextEditor;
 }
@@ -126,8 +128,9 @@ export const window = {
   onDidChangeActiveTextEditor: events.active.subscribe,
   onDidChangeVisibleTextEditors: events.visible.subscribe,
   onDidChangeTextEditorVisibleRanges: events.ranges.subscribe,
+  onDidChangeTextEditorSelection: events.selection.subscribe,
   createStatusBarItem: vi.fn(() => ({ text: '', tooltip: '', command: '', show: vi.fn(), hide: vi.fn(), dispose: vi.fn() })),
-  createTextEditorDecorationType: vi.fn(() => ({ key: 'test-decoration', dispose: vi.fn() })),
+  createTextEditorDecorationType: vi.fn((_options?: vscode.DecorationRenderOptions) => ({ key: 'test-decoration', dispose: vi.fn() })),
   showInformationMessage: vi.fn(async (..._args: unknown[]) => undefined as string | undefined),
   showWarningMessage: vi.fn(async (..._args: unknown[]) => undefined as string | undefined),
   showInputBox: vi.fn(async (..._args: unknown[]) => undefined as string | undefined),
