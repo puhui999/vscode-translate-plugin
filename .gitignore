@@ -1,0 +1,12 @@
+node_modules/
+dist/
+coverage/
+artifacts/
+.DS_Store
+*.vsix
+.vscode-test/
+.env
+.env.*
+!.env.example
+*.sqlite
+*.sqlite-*

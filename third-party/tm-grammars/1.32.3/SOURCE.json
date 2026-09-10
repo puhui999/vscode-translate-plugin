@@ -1,0 +1,29 @@
+{
+  "name": "tm-grammars",
+  "version": "1.32.3",
+  "shikiLanguagePackage": {
+    "name": "@shikijs/langs",
+    "version": "4.4.3"
+  },
+  "upstreamRepository": "https://github.com/shikijs/textmate-grammars-themes",
+  "upstreamPackageDirectory": "packages/tm-grammars",
+  "versionEvidence": "https://github.com/shikijs/shiki/blob/v4.4.3/pnpm-lock.yaml",
+  "versionEvidenceImporter": "packages/langs.devDependencies.tm-grammars.version = 1.32.3",
+  "registryMetadata": "https://registry.npmjs.org/tm-grammars/1.32.3",
+  "tarball": "https://registry.npmjs.org/tm-grammars/-/tm-grammars-1.32.3.tgz",
+  "integrity": "sha512-7h+UR4PPD4KY5Bu6olRkylEoEkrO8lK0Q6cHgThgq/IJWyiMj3iCcGlvJaLLplXW9PmOniOKnhajsBnM5/btfQ==",
+  "retrievedOn": "2026-09-10",
+  "files": [
+    {
+      "file": "LICENSE",
+      "sha256": "7a9d8d01038aeacf9e5bcdabbddf2a7815200dce9fc1118468cc553e00ae3eee",
+      "bytes": 1121
+    },
+    {
+      "file": "NOTICE",
+      "sha256": "891a322f68bde2f18f5ce84592c03cf7cda3197f648df71b5a31d647f5892586",
+      "bytes": 683972
+    }
+  ],
+  "note": "LICENSE and NOTICE were copied byte-for-byte from the integrity-verified npm release tarball. The full NOTICE also lists grammars that are not bundled in this extension; consult the generated bundled-grammars.json for the bundled subset."
+}

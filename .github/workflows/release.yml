@@ -1,0 +1,48 @@
+name: Release VSIX
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Verify release version and notes
+        run: |
+          node -e 'const version = require("./package.json").version; if (process.env.GITHUB_REF_NAME !== `v${version}`) throw new Error("Tag must match package.json version");'
+          test -f ".github/release-notes/${GITHUB_REF_NAME}.md"
+      - run: npm ci
+      - run: npm run test:coverage
+      - run: npm run package
+      - name: Publish VSIX and checksum
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          asset="vscode-translate-plugin-${version}.vsix"
+          (cd artifacts && sha256sum "$asset" > SHA256SUMS.txt)
+          gh release create "$GITHUB_REF_NAME" \
+            "artifacts/$asset" artifacts/SHA256SUMS.txt \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "注释译读 ${GITHUB_REF_NAME}" \
+            --notes-file ".github/release-notes/${GITHUB_REF_NAME}.md"
