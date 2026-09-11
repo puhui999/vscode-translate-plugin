@@ -23,7 +23,7 @@
   </extensions>
   <actions>
     <group id="CommentTranslator.Menu" text="注释译读" popup="true">
-      <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+      <add-to-group group-id="EditorPopupMenu" anchor="first"/>
       <add-to-group group-id="ToolsMenu" anchor="last"/>
       <action id="CommentTranslator.TranslateFile" class="com.puhui.commenttranslator.actions.TranslateFileAction" text="检查 / 继续翻译当前文件"/>
       <action id="CommentTranslator.TranslateComment" class="com.puhui.commenttranslator.actions.TranslateCommentAction" text="翻译当前注释"/>

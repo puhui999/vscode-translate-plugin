@@ -1,17 +1,17 @@
 # 注释译读 · IntelliJ IDEA 验证版
 
-版本 `0.1.2`。默认在原注释位置显示 AI 译文，悬停查看原文，点击后查看、编辑原注释，光标和选区离开后自动恢复译文。独立注释采用无边框多行排版；设置中也可选择原文与译文上下对照。显示使用编辑器的折叠或 Inlay 机制，译文不写入源文件，保存、撤销、普通复制和 Git diff 仍基于源码。
+版本 `0.1.3`。默认在原注释位置显示 AI 译文，悬停查看原文，点击后查看、编辑原注释，光标和选区离开后自动恢复译文。独立注释采用无边框多行排版；设置中也可选择原文与译文上下对照。显示使用编辑器的折叠或 Inlay 机制，译文不写入源文件，保存、撤销、普通复制和 Git diff 仍基于源码。
 
 开发基线为 IntelliJ IDEA `2026.2.0.1 / 262.8665.337`，安装包声明的兼容范围为 `262.8665` 至 `262.*`。当前是 IDEA 预览版，尚未承诺其他 JetBrains IDE 或旧版 IDEA 的兼容性。
 
 ## 安装与离线体验
 
-1. 在 [GitHub Releases](https://github.com/puhui999/vscode-translate-plugin/releases) 中查找 `idea-v*` 预发布，下载 `idea-comment-translator-0.1.2.zip`。选择插件 ZIP，无需解压。
+1. 在 [GitHub Releases](https://github.com/puhui999/vscode-translate-plugin/releases) 中查找 `idea-v*` 预发布，下载 `idea-comment-translator-0.1.3.zip`。选择插件 ZIP，无需解压。
 2. 在 IDEA 中打开 **Settings → Plugins → 齿轮菜单 → Install Plugin from Disk**，选择 ZIP，按提示完成安装。
 3. 打开一个项目，运行 **Tools → 注释译读 → 打开离线体验示例**。示例包含行注释、行尾注释、单行/多行文档注释和长译文；使用固定译文，不调用模型，也不写入翻译缓存。
 4. 运行 **Tools → 注释译读 → 配置翻译服务…**，填写自己的服务地址和模型。API Key 如有需要也在此设置。
 
-菜单也可从源码编辑器右键进入，或通过 IDEA 的 Find Action 搜索动作名称。安装与体验不需要额外安装 Node.js。
+菜单也可从源码编辑器右键菜单顶部进入，或通过 IDEA 的 Find Action 搜索动作名称。安装与体验不需要额外安装 Node.js。
 
 ## 语言与显示范围
 
@@ -84,7 +84,7 @@ cd idea-plugin
 ./gradlew test buildPlugin
 ```
 
-默认从官方仓库解析 IDEA `2026.2.0.1` 及构建依赖。产物为 `build/distributions/idea-comment-translator-0.1.2.zip`；Windows 使用 `gradlew.bat`。
+默认从官方仓库解析 IDEA `2026.2.0.1` 及构建依赖。产物为 `build/distributions/idea-comment-translator-0.1.3.zip`；Windows 使用 `gradlew.bat`。
 
 也可指定本机同版本 IDEA，减少下载：
 
