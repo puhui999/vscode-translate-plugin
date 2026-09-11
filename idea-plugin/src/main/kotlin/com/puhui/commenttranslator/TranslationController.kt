@@ -1,6 +1,7 @@
 package com.puhui.commenttranslator
 
 import com.intellij.ide.trustedProjects.TrustedProjects
+import com.intellij.ide.trustedProjects.TrustedProjectsListener
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ReadAction
@@ -13,6 +14,8 @@ import com.intellij.openapi.editor.event.DocumentEvent
 import com.intellij.openapi.editor.event.DocumentListener
 import com.intellij.openapi.editor.event.EditorFactoryEvent
 import com.intellij.openapi.editor.event.EditorFactoryListener
+import com.intellij.openapi.editor.event.EditorMouseEvent
+import com.intellij.openapi.editor.event.EditorMouseListener
 import com.intellij.openapi.fileEditor.*
 import com.intellij.openapi.fileTypes.FileTypeManager
 import com.intellij.openapi.ide.CopyPasteManager
@@ -80,7 +83,7 @@ private data class ScanSnapshot(val version: Long, val blocks: List<CommentBlock
 /** Coordinates native editor events, cache-first batches, cancellation and non-mutating display. */
 @Service(Service.Level.PROJECT)
 class TranslationController(private val project: Project) : Disposable {
-    private val sessions = ConcurrentHashMap<String, FileSession>()
+    private val sessions = ConcurrentHashMap<VirtualFile, FileSession>()
     private val runtime get() = TranslationRuntime.getInstance()
     private val settings get() = TranslationSettings.getInstance()
     private var started = false
@@ -91,11 +94,24 @@ class TranslationController(private val project: Project) : Disposable {
     fun start() = onUi {
         if (started) return@onUi
         started = true
+        ApplicationManager.getApplication().messageBus.connect(this).subscribe(TrustedProjectsListener.TOPIC, object : TrustedProjectsListener {
+            override fun onProjectTrusted(project: Project) {
+                if (project === this@TranslationController.project) onUi { FileEditorManager.getInstance(project).openFiles.forEach(::consider) }
+            }
+        })
+        EditorFactory.getInstance().eventMulticaster.addEditorMouseListener(object : EditorMouseListener {
+            override fun mousePressed(event: EditorMouseEvent) {
+                if (event.editor.project === project) TranslationActionTarget.recordPopup(event)
+            }
+            override fun mouseReleased(event: EditorMouseEvent) {
+                if (event.editor.project === project && event.mouseEvent.isPopupTrigger) TranslationActionTarget.recordPopup(event)
+            }
+        }, this)
         project.messageBus.connect(this).subscribe(FileEditorManagerListener.FILE_EDITOR_MANAGER, object : FileEditorManagerListener {
             override fun fileOpened(source: FileEditorManager, file: VirtualFile) { consider(file) }
             override fun selectionChanged(event: FileEditorManagerEvent) { event.newFile?.let(::consider); refreshStatus() }
             override fun fileClosed(source: FileEditorManager, file: VirtualFile) {
-                sessions.remove(file.url)?.let { session -> session.renderers.values.forEach { it.clear() }; Disposer.dispose(session) }
+                sessions.remove(file)?.let { session -> session.renderers.values.forEach { it.clear() }; Disposer.dispose(session) }
                 refreshStatus()
             }
         })
@@ -147,22 +163,23 @@ class TranslationController(private val project: Project) : Disposable {
     }
 
     /** Translates the current source file, admitting another budget of missing comments on manual retry. */
-    fun translateCurrent(onlyComment: Boolean = false) = onUi {
-        val file = activeFile() ?: return@onUi
+    fun translateCurrent(onlyComment: Boolean = false, target: TranslationActionTarget? = null) = onUi {
+        start()
+        val file = activeFile(target) ?: run { notifyTranslation(project, "请先打开受支持的源码文件。", false); return@onUi }
         if (!eligible(file)) { notifyTranslation(project, "此文件暂不支持注释翻译。验证版支持 Java、Kotlin、HTML/XML 等已安装语言。", false); return@onUi }
         if (file.getUserData(DEMO_FILE) != true && !ready(true)) return@onUi
         val session = session(file) ?: return@onUi
         session.budget.set(AUTOMATIC_LIMIT)
         session.visible = true
-        val editor = FileEditorManager.getInstance(project).selectedTextEditor
+        val editor = activeEditor(target)
         if (onlyComment && editor?.document !== session.document) { notifyTranslation(project, "请返回源码，将光标放到需要翻译的注释中。", false); return@onUi }
-        val offset = if (onlyComment) currentBlock()?.second?.startOffset ?: editor!!.caretModel.offset else null
+        val offset = if (onlyComment) currentBlock(target)?.second?.startOffset ?: target?.offset ?: editor!!.caretModel.offset else null
         request(session, false, offset)
     }
 
     /** Toggles display without changing automatic-request policy or invalidating the cache. */
-    fun toggleVisible() = onUi {
-        val file = activeFile() ?: return@onUi
+    fun toggleVisible(target: TranslationActionTarget? = null) = onUi {
+        val file = activeFile(target) ?: return@onUi
         val session = session(file) ?: return@onUi
         session.visible = !session.visible; render(session); refreshStatus()
     }
@@ -175,6 +192,7 @@ class TranslationController(private val project: Project) : Disposable {
 
     /** Reacts to the automatic switch without affecting explicit manual translation tasks. */
     fun automaticChanged() = onUi {
+        start()
         if (!settings.state.automatic) sessions.values.filter { it.automaticRequest }.forEach { cancel(it); it.status = "自动翻译已关闭" }
         else FileEditorManager.getInstance(project).openFiles.forEach(::consider)
         refreshStatus()
@@ -194,24 +212,24 @@ class TranslationController(private val project: Project) : Disposable {
     fun openSettings() { ShowSettingsUtil.getInstance().showSettingsDialog(project, "注释译读") }
 
     /** Copies the translated comment at the caret without changing the normal source clipboard behavior. */
-    fun copyCurrentTranslation() = onUi {
-        currentBlock()?.let { (session, block) ->
+    fun copyCurrentTranslation(target: TranslationActionTarget? = null) = onUi {
+        currentBlock(target)?.let { (session, block) ->
             session.translations[block.id]?.let { CopyPasteManager.getInstance().setContents(StringSelection(CommentFormatter.format(block, it))) }
         } ?: notifyTranslation(project, "请将光标放到已有译文的注释中。", false)
     }
 
     /** Provides a keyboard-accessible counterpart to the inlay expansion control. */
-    fun expandCurrentTranslation() = onUi {
-        currentBlock()?.let { (session, block) ->
-            FileEditorManager.getInstance(project).selectedTextEditor?.let { session.renderers[it]?.toggle(block.id) }
+    fun expandCurrentTranslation(target: TranslationActionTarget? = null) = onUi {
+        currentBlock(target)?.let { (session, block) ->
+            activeEditor(target)?.let { session.renderers[it]?.toggle(block.id) }
         }
             ?: notifyTranslation(project, "请将光标放到已有译文的注释中。", false)
     }
 
     /** Opens a selectable, read-only translated snapshot, leaving the source document untouched. */
-    fun openReader() = onUi {
-        val file = activeFile() ?: return@onUi
-        val state = sessions[file.url]
+    fun openReader(target: TranslationActionTarget? = null) = onUi {
+        val file = activeFile(target) ?: return@onUi
+        val state = sessions[file]
         if (state == null || state.translations.isEmpty() || state.version != state.document.modificationStamp) {
             notifyTranslation(project, "当前文件还没有可阅读的译文，请先翻译注释。", false); return@onUi
         }
@@ -227,12 +245,21 @@ class TranslationController(private val project: Project) : Disposable {
         FileEditorManager.getInstance(project).openFile(reader, true)
     }
 
-    /** Clears the application cache and cancels earlier tasks before allowing new work. */
+    /** Clears reusable results and resumes open files according to the existing automatic preference. */
     fun clearCache() = onUi {
-        settings.update(settings.state.copy(automatic = false))
         ProjectManager.getInstance().openProjects.filterNot { it.isDisposed }.forEach { getInstance(it).resetAfterClear() }
         runtime.workers.submit {
-            try { runtime.clearCache(); notifyTranslation(project, "缓存已清除，自动翻译已关闭。", false) }
+            try {
+                runtime.clearCache()
+                ApplicationManager.getApplication().invokeLater {
+                    ProjectManager.getInstance().openProjects.filterNot { it.isDisposed }.forEach {
+                        // Discard requests started while the asynchronous database clear was in progress.
+                        getInstance(it).resetAfterClear()
+                        getInstance(it).automaticChanged()
+                    }
+                    if (!project.isDisposed) notifyTranslation(project, "缓存已清除；打开文件将按当前自动翻译设置重新处理。", false)
+                }
+            }
             catch (_: Exception) { notifyTranslation(project, "缓存清理失败，请检查数据库是否可访问。", true) }
         }
     }
@@ -284,7 +311,7 @@ class TranslationController(private val project: Project) : Disposable {
     /** Supplies compact progress for the native status widget. */
     fun statusText(): String {
         val file = activeFile()
-        val state = file?.let { sessions[it.url] }
+        val state = file?.let { sessions[it] }
         if (state != null) return "译读 ${if (!state.visible) "已隐藏 · " else ""}${state.status}"
         return if (!settings.isConfigured()) "译读 · 配置服务" else if (settings.state.automatic) "译读 · 自动" else "译读 · 手动"
     }
@@ -301,18 +328,24 @@ class TranslationController(private val project: Project) : Disposable {
         if (session.file.getUserData(DEMO_FILE) == true) { if (session.translations.isEmpty()) request(session, false); return }
         if (settings.state.automatic && ready(false)) {
             if (session.completion.needsAutomaticRun(session.document.modificationStamp, session.future?.isDone == false)) schedule(session)
+        } else if (session.translations.isEmpty()) {
+            session.status = when {
+                settings.saving -> "正在保存配置"
+                !settings.isConfigured() -> "请配置翻译服务"
+                !TrustedProjects.isProjectTrusted(project) -> "项目未受信任"
+                else -> "自动翻译已关闭"
+            }
+            refreshStatus()
         }
     }
 
     private fun session(file: VirtualFile): FileSession? {
         if (!eligible(file)) return null
         val document = FileDocumentManager.getInstance().getDocument(file) ?: return null
-        return sessions.computeIfAbsent(file.url) { FileSession(file, document).also { Disposer.register(this, it) } }
+        return sessions.computeIfAbsent(file) { FileSession(file, document).also { Disposer.register(this, it) } }
     }
 
-    private fun eligible(file: VirtualFile): Boolean = file.isValid && !file.isDirectory && file.getUserData(READER_SOURCE) == null &&
-        (file.isInLocalFileSystem || file.getUserData(DEMO_FILE) == true) &&
-        file.extension?.lowercase() in setOf("java", "kt", "kts", "xml", "html", "htm", "xhtml", "xsl")
+    private fun eligible(file: VirtualFile): Boolean = file.getUserData(READER_SOURCE) == null && isSupportedTranslationSource(file)
 
     private fun ready(manual: Boolean): Boolean {
         if (settings.saving) { if (manual) notifyTranslation(project, "正在保存配置，请稍后重试。", false); return false }
@@ -324,7 +357,7 @@ class TranslationController(private val project: Project) : Disposable {
     private fun schedule(session: FileSession) {
         session.timer?.cancel(false)
         session.timer = runtime.timer.schedule({ onUi {
-            if (sessions[session.file.url] === session &&
+            if (sessions[session.file] === session &&
                 session.completion.needsAutomaticRun(session.document.modificationStamp, session.future?.isDone == false)) request(session, true)
         } }, 600, TimeUnit.MILLISECONDS)
     }
@@ -347,7 +380,7 @@ class TranslationController(private val project: Project) : Disposable {
                 val epoch = runtime.cacheEpoch.get()
                 fun current(): Boolean = !disposed && !project.isDisposed && !Thread.currentThread().isInterrupted &&
                     session.generation.get() == generation && session.document.modificationStamp == initialVersion &&
-                    sessions[session.file.url] === session && session.file.isValid
+                    sessions[session.file] === session && session.file.isValid
                 if (!current()) return@submit
                 try {
                     val snapshot = ReadAction.nonBlocking<ScanSnapshot> {
@@ -398,6 +431,7 @@ class TranslationController(private val project: Project) : Disposable {
                     val completed = results.toMap()
                     onUi { if (current()) {
                         applyResults(session, snapshot, completed, completeLabel(completed.size, hits, remaining), hits, remaining, onlyOffset == null)
+                        if (!automatic) notifyTranslation(project, "${session.file.name}：${completeLabel(completed.size, hits, remaining)}", false)
                         if (onlyOffset != null && settings.state.automatic && session.completion.needsAutomaticRun(snapshot.version, false)) schedule(session)
                     } }
                 } catch (_: ProcessCanceledException) { /* A write, cancellation or project close invalidated the read. */
@@ -423,7 +457,7 @@ class TranslationController(private val project: Project) : Disposable {
     }
 
     private fun render(session: FileSession) {
-        val editors = EditorFactory.getInstance().getEditors(session.document, project).filterNot { it.isDisposed || it.isViewer }
+        val editors = EditorFactory.getInstance().getEditors(session.document, project).filterNot { it.isDisposed }
         val items = if (!session.visible || session.version != session.document.modificationStamp) emptyList() else session.blocks.mapNotNull { block ->
             session.translations[block.id]?.let { DisplayTranslation(block.id, block.startOffset, block.endOffset, CommentFormatter.format(block, it), block.indent, block.rawText) }
         }
@@ -439,17 +473,31 @@ class TranslationController(private val project: Project) : Disposable {
         }
     }
 
-    private fun activeFile(): VirtualFile? {
-        val selected = FileEditorManager.getInstance(project).selectedFiles.firstOrNull()
-        return if (selected != null) selected.getUserData(READER_SOURCE) ?: selected.takeIf(::eligible) else lastFile?.takeIf { it.isValid }
+    /** Reports menu availability for the invoked editor without scanning or sending network requests. */
+    fun actionState(target: TranslationActionTarget? = null): TranslationActionState {
+        val file = activeFile(target) ?: return TranslationActionState()
+        if (!eligible(file)) return TranslationActionState()
+        val session = sessions[file]
+        val valid = session != null && session.version == session.document.modificationStamp
+        return TranslationActionState(true, session?.future?.isDone == false || session?.timer?.isDone == false,
+            valid && session.translations.isNotEmpty(), currentBlock(target) != null, session?.visible ?: true)
     }
 
-    private fun currentBlock(): Pair<FileSession, CommentBlock>? {
-        val file = activeFile() ?: return null
-        val session = sessions[file.url] ?: return null
-        val editor = FileEditorManager.getInstance(project).selectedTextEditor ?: return null
+    private fun activeEditor(target: TranslationActionTarget?): Editor? =
+        target?.editor?.takeUnless { it.isDisposed } ?: FileEditorManager.getInstance(project).selectedTextEditor
+
+    private fun activeFile(target: TranslationActionTarget? = null): VirtualFile? {
+        val selected = target?.file ?: target?.editor?.let { FileDocumentManager.getInstance().getFile(it.document) }
+            ?: FileEditorManager.getInstance(project).selectedFiles.firstOrNull()
+        return if (selected != null) selected.getUserData(READER_SOURCE) ?: selected else lastFile?.takeIf { it.isValid }
+    }
+
+    private fun currentBlock(target: TranslationActionTarget? = null): Pair<FileSession, CommentBlock>? {
+        val file = activeFile(target) ?: return null
+        val session = sessions[file] ?: return null
+        val editor = activeEditor(target) ?: return null
         if (editor.document !== session.document || session.version != session.document.modificationStamp) return null
-        val offset = editor.caretModel.offset
+        val offset = target?.offset ?: editor.caretModel.offset
         val foldedId = editor.foldingModel.getCollapsedRegionAtOffset(offset)?.getUserData(TRANSLATED_COMMENT_ID)
         val block = session.blocks.firstOrNull {
             (it.id == foldedId || offset in it.startOffset until it.endOffset) && session.translations.containsKey(it.id)
@@ -466,7 +514,7 @@ class TranslationController(private val project: Project) : Disposable {
     }
 
     private fun completeLabel(count: Int, hits: Int, remaining: Int): String =
-        if (remaining > 0) "$count 条 · 余 $remaining 条，手动继续" else "$count 条 · 缓存 $hits"
+        if (count == 0 && remaining == 0) "未发现可翻译注释" else if (remaining > 0) "$count 条 · 余 $remaining 条，继续翻译" else "$count 条 · 缓存 $hits"
 
     private fun demoTranslation(text: String): String? = when {
         text.startsWith("Description.") -> "计数器的当前值。"

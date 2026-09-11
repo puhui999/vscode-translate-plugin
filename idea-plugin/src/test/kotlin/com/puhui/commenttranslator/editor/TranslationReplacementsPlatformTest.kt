@@ -7,6 +7,7 @@ import com.intellij.openapi.editor.FoldRegion
 import com.intellij.openapi.fileTypes.PlainTextFileType
 import com.intellij.openapi.util.Disposer
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import com.intellij.util.ui.UIUtil
 
 /** Verifies replacement folds using the actual IntelliJ editor implementation. */
 class TranslationReplacementsPlatformTest : BasePlatformTestCase() {
@@ -100,8 +101,8 @@ class TranslationReplacementsPlatformTest : BasePlatformTestCase() {
         assertEquals(source, editor.document.text)
     }
 
-    /** An explicit reveal survives new snapshots; a later explicit toggle can collapse from inside source. */
-    fun testRevealIsStickyAndExplicitToggleCanRestoreFromInteriorCaret() {
+    /** An editing reveal survives new snapshots; an explicit toggle can still restore from inside source. */
+    fun testRevealSurvivesSnapshotsAndExplicitToggleCanRestoreFromInteriorCaret() {
         val source = "// Original comment\nvalue\n"
         myFixture.configureByText(PlainTextFileType.INSTANCE, source)
         val editor = myFixture.editor
@@ -117,6 +118,88 @@ class TranslationReplacementsPlatformTest : BasePlatformTestCase() {
         assertEquals(1, owned().size)
         assertEquals(0, editor.caretModel.offset)
         assertFalse(display.toggle("missing"))
+        assertEquals(source, editor.document.text)
+    }
+
+    /** Leaving a revealed comment restores its translation through editor events, without a fresh render or request. */
+    fun testLeavingRevealedCommentAutomaticallyRestoresTranslation() {
+        val source = "    /** Original docs. */\nclass Example {}\n"
+        myFixture.configureByText(PlainTextFileType.INSTANCE, source)
+        val editor = myFixture.editor
+        val item = item(source, "/**", "*/", "/** 中文文档。 */")
+        val display = TranslationReplacements(editor, testRootDisposable)
+        val outside = source.indexOf("class")
+        editor.caretModel.moveToOffset(outside)
+        display.render(listOf(item))
+        val stamp = editor.document.modificationStamp
+        assertTrue(display.reveal(item.id))
+        // A pending earlier caret event must not immediately undo the reveal command.
+        UIUtil.dispatchAllInvocationEvents()
+        assertTrue(owned().isEmpty())
+        editor.caretModel.moveToOffset(item.startOffset)
+        UIUtil.dispatchAllInvocationEvents()
+        assertTrue("The clicked delimiter is an editable boundary", owned().isEmpty())
+        editor.caretModel.moveToOffset(2)
+        UIUtil.dispatchAllInvocationEvents()
+        assertTrue("Indentation on the revealed comment line remains editable", owned().isEmpty())
+        editor.caretModel.moveToOffset(item.endOffset)
+        UIUtil.dispatchAllInvocationEvents()
+        assertTrue("Backspace at the comment end must still edit the original", owned().isEmpty())
+        editor.caretModel.moveToOffset(outside)
+        UIUtil.dispatchAllInvocationEvents()
+        assertTrue(owned().single() is CustomFoldRegion)
+        assertEquals(outside, editor.caretModel.offset)
+        assertEquals(stamp, editor.document.modificationStamp)
+        assertEquals(source, editor.document.text)
+    }
+
+    /** Secondary carets and selections delay automatic replacement until the last editing position leaves. */
+    fun testRevealedCommentWaitsForAllCaretsAndSelectionsToLeave() {
+        val source = "// Original comment\nfirst();\nsecond();\n"
+        myFixture.configureByText(PlainTextFileType.INSTANCE, source)
+        val editor = myFixture.editor
+        val item = DisplayTranslation("line", 0, source.indexOf('\n'), "// 中文注释", "", source.substringBefore('\n'))
+        val display = TranslationReplacements(editor, testRootDisposable)
+        editor.caretModel.moveToOffset(source.indexOf("first"))
+        display.render(listOf(item))
+        assertTrue(display.reveal(item.id))
+        val outsideCaret = editor.caretModel.primaryCaret
+        val secondary = editor.caretModel.addCaret(editor.offsetToVisualPosition(6))
+        assertNotNull(secondary)
+        outsideCaret.moveToOffset(source.indexOf("second"))
+        UIUtil.dispatchAllInvocationEvents()
+        assertTrue("A secondary caret keeps the original available for editing", owned().isEmpty())
+        outsideCaret.setSelection(3, source.indexOf("first") + 3)
+        editor.caretModel.removeCaret(secondary!!)
+        UIUtil.dispatchAllInvocationEvents()
+        assertTrue("A selection that overlaps the original must not be hidden", owned().isEmpty())
+        outsideCaret.removeSelection()
+        UIUtil.dispatchAllInvocationEvents()
+        assertEquals(1, owned().size)
+        assertEquals(source, editor.document.text)
+    }
+
+    /** Moving into adjacent code restores an inline translation without hiding that code or moving the caret. */
+    fun testInlineTranslationReturnsWhenCaretMovesIntoAdjacentCode() {
+        val source = "call(/* Original comment */ value);\n"
+        myFixture.configureByText(PlainTextFileType.INSTANCE, source)
+        val editor = myFixture.editor
+        val item = item(source, "/*", "*/", "/* 中文注释 */")
+        val display = TranslationReplacements(editor, testRootDisposable)
+        display.render(listOf(item))
+        assertTrue(display.reveal(item.id))
+        editor.caretModel.moveToOffset(item.startOffset + 3)
+        UIUtil.dispatchAllInvocationEvents()
+        assertTrue(owned().isEmpty())
+        val code = source.indexOf("value")
+        editor.caretModel.moveToOffset(code)
+        UIUtil.dispatchAllInvocationEvents()
+        val fold = owned().single()
+        assertFalse(fold is CustomFoldRegion)
+        assertEquals(item.startOffset, fold.startOffset)
+        assertEquals(item.endOffset, fold.endOffset)
+        assertFalse(editor.foldingModel.isOffsetCollapsed(code))
+        assertEquals(code, editor.caretModel.offset)
         assertEquals(source, editor.document.text)
     }
 
@@ -148,7 +231,7 @@ class TranslationReplacementsPlatformTest : BasePlatformTestCase() {
         assertEquals(1, owned().size)
     }
 
-    /** Changing source invalidates stale translations but does not erase the user's editing choice. */
+    /** A changed identifier/range remains editable, then its fresh translation appears after leaving. */
     fun testSourceValidationAndEditingChoiceSurviveChangedCommentIdentifier() {
         val source = "// Original comment\nvalue\n"
         myFixture.configureByText(PlainTextFileType.INSTANCE, source)
@@ -158,6 +241,7 @@ class TranslationReplacementsPlatformTest : BasePlatformTestCase() {
         val display = TranslationReplacements(editor, testRootDisposable)
         display.render(listOf(item))
         assertTrue(display.toggle(item.id))
+        editor.caretModel.moveToOffset(6)
         WriteCommandAction.runWriteCommandAction(project) { editor.document.insertString(3, "Changed ") }
         display.render(listOf(item))
         assertTrue(owned().isEmpty())
@@ -166,8 +250,9 @@ class TranslationReplacementsPlatformTest : BasePlatformTestCase() {
         val fresh = item.copy(id = "new", endOffset = changed.length, originalText = changed)
         display.render(listOf(fresh))
         assertTrue("A rescan must not hide source that the user is editing", owned().isEmpty())
-        assertTrue(display.toggle(fresh.id))
-        assertEquals(1, owned().size)
+        editor.caretModel.moveToOffset(editor.document.text.indexOf("value"))
+        UIUtil.dispatchAllInvocationEvents()
+        assertEquals(fresh.id, owned().single().getUserData(TRANSLATED_COMMENT_ID))
         assertEquals("// Changed Original comment\nvalue\n", editor.document.text)
     }
 

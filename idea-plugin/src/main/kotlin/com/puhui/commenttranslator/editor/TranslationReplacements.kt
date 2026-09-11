@@ -45,10 +45,12 @@ class TranslationReplacements(private val editor: Editor, parent: Disposable) : 
     private data class Metrics(val width: Int, val font: Font, val context: FontRenderContext, val lineHeight: Int, val tabSize: Int)
     private data class WholeLines(val first: Int, val last: Int, val start: Int, val end: Int)
     private data class Entry(val item: DisplayTranslation, val fold: FoldRegion, val renderer: ReplacementRenderer?)
+    private data class RevealedComment(val range: RangeMarker, val interaction: Long)
 
     private val entries = LinkedHashMap<String, Entry>()
-    // Range markers retain a user's editing choice even when edits give a comment a new identifier.
-    private val revealed = ArrayList<RangeMarker>()
+    // Follow edits and rescans until every caret and selection has left the revealed comment.
+    private val revealed = ArrayList<RevealedComment>()
+    private var interaction = 0L
     private var items: List<DisplayTranslation> = emptyList()
     private var lastMetrics: Metrics? = null
     private var documentRenderingBefore: Boolean? = null
@@ -76,12 +78,12 @@ class TranslationReplacements(private val editor: Editor, parent: Disposable) : 
             override fun documentChanged(event: DocumentEvent) = scheduleReconcile()
         }, this)
         editor.caretModel.addCaretListener(object : CaretListener {
-            override fun caretPositionChanged(event: CaretEvent) = scheduleReconcile()
-            override fun caretAdded(event: CaretEvent) = scheduleReconcile()
-            override fun caretRemoved(event: CaretEvent) = scheduleReconcile()
+            override fun caretPositionChanged(event: CaretEvent) = editingPositionChanged()
+            override fun caretAdded(event: CaretEvent) = editingPositionChanged()
+            override fun caretRemoved(event: CaretEvent) = editingPositionChanged()
         }, this)
         editor.selectionModel.addSelectionListener(object : SelectionListener {
-            override fun selectionChanged(event: SelectionEvent) = scheduleReconcile()
+            override fun selectionChanged(event: SelectionEvent) = editingPositionChanged()
         }, this)
         (editor.foldingModel as? FoldingModelEx)?.addListener(object : FoldingListener {
             override fun onFoldRegionStateChange(region: FoldRegion) {
@@ -150,7 +152,7 @@ class TranslationReplacements(private val editor: Editor, parent: Disposable) : 
     override fun clear() = onEdt {
         items = emptyList()
         preserveReadingAnchor { removeOwnedFolds() }
-        revealed.forEach { it.dispose() }
+        revealed.forEach { it.range.dispose() }
         revealed.clear()
         restoreDocumentationRendering()
         resetTooltip()
@@ -174,7 +176,7 @@ class TranslationReplacements(private val editor: Editor, parent: Disposable) : 
         editor.caretModel.allCarets.filter { it.offset > start && it.offset < end }.forEach {
             it.moveToOffset(start)
         }
-        revealed.removeAll { marker ->
+        revealed.removeAll { (marker, _) ->
             if (!marker.isValid || intersects(marker.startOffset, marker.endOffset, item.startOffset, item.endOffset)) {
                 marker.dispose()
                 true
@@ -205,7 +207,7 @@ class TranslationReplacements(private val editor: Editor, parent: Disposable) : 
                 restoreDocumentationRendering()
                 resetTooltip()
             }
-            revealed.forEach { it.dispose() }
+            revealed.forEach { it.range.dispose() }
             revealed.clear()
             entries.clear()
             items = emptyList()
@@ -216,7 +218,12 @@ class TranslationReplacements(private val editor: Editor, parent: Disposable) : 
     private fun reconcile() {
         if (disposed || editor.isDisposed) return
         reflowTimer.stop()
-        revealed.removeAll { !it.isValid }
+        revealed.removeAll { (range, openedAt) ->
+            // Do not immediately refold a command's reveal before its click/caret handling finishes.
+            val expired = !range.isValid || openedAt < interaction && !isEditing(range)
+            if (expired) range.dispose()
+            expired
+        }
         val current = metrics()
         val valid = items.filter(::isCurrent)
         entries.values.filter { isCurrent(it.item) && if (it.fold.isValid && it.renderer != null) {
@@ -283,15 +290,18 @@ class TranslationReplacements(private val editor: Editor, parent: Disposable) : 
         return whole
     }
 
-    private fun wholeLines(item: DisplayTranslation): WholeLines? {
+    private fun wholeLines(item: DisplayTranslation): WholeLines? = wholeLines(item.startOffset, item.endOffset)
+
+    private fun wholeLines(commentStart: Int, commentEnd: Int): WholeLines? {
+        if (commentEnd <= commentStart) return null
         val document = editor.document
         val source = document.immutableCharSequence
-        val first = document.getLineNumber(item.startOffset)
-        val last = document.getLineNumber(item.endOffset - 1)
+        val first = document.getLineNumber(commentStart)
+        val last = document.getLineNumber(commentEnd - 1)
         val start = document.getLineStartOffset(first)
         val end = document.getLineEndOffset(last)
-        if (item.endOffset > end || source.subSequence(start, item.startOffset).any { !it.isWhitespace() } ||
-            source.subSequence(item.endOffset, end).any { !it.isWhitespace() }
+        if (commentEnd > end || source.subSequence(start, commentStart).any { !it.isWhitespace() } ||
+            source.subSequence(commentEnd, end).any { !it.isWhitespace() }
         ) return null
         return WholeLines(first, last, start, end)
     }
@@ -307,12 +317,35 @@ class TranslationReplacements(private val editor: Editor, parent: Disposable) : 
             caret.hasSelection() && intersects(start, end, caret.selectionStart, caret.selectionEnd)
     }
 
-    private fun isRevealed(item: DisplayTranslation): Boolean = revealed.any {
-        it.isValid && intersects(it.startOffset, it.endOffset, item.startOffset, item.endOffset)
+    private fun isRevealed(item: DisplayTranslation): Boolean = revealed.any { (range, _) ->
+        range.isValid && intersects(range.startOffset, range.endOffset, item.startOffset, item.endOffset)
     }
 
     private fun rememberRevealed(item: DisplayTranslation) {
-        if (isCurrent(item) && !isRevealed(item)) revealed.add(editor.document.createRangeMarker(item.startOffset, item.endOffset))
+        if (isCurrent(item) && !isRevealed(item)) {
+            val range = editor.document.createRangeMarker(item.startOffset, item.endOffset).apply {
+                isGreedyToLeft = true
+                isGreedyToRight = true
+            }
+            revealed.add(RevealedComment(range, interaction))
+        }
+    }
+
+    private fun isEditing(range: RangeMarker): Boolean {
+        val whole = wholeLines(range.startOffset, range.endOffset)
+        val start = whole?.start ?: range.startOffset
+        val end = whole?.end ?: range.endOffset
+        return editor.caretModel.allCarets.any { caret ->
+            // Boundaries remain editable after the first Delete/Backspace reveals the source.
+            caret.offset in start..end || caret.hasSelection() &&
+                intersects(start, end, caret.selectionStart, caret.selectionEnd)
+        }
+    }
+
+    private fun editingPositionChanged() {
+        if (disposed || changingFolds) return
+        interaction++
+        scheduleReconcile()
     }
 
     private fun reveal(item: DisplayTranslation) {

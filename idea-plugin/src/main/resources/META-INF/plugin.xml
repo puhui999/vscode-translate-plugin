@@ -25,7 +25,7 @@
     <group id="CommentTranslator.Menu" text="注释译读" popup="true">
       <add-to-group group-id="EditorPopupMenu" anchor="last"/>
       <add-to-group group-id="ToolsMenu" anchor="last"/>
-      <action id="CommentTranslator.TranslateFile" class="com.puhui.commenttranslator.actions.TranslateFileAction" text="翻译当前文件注释"/>
+      <action id="CommentTranslator.TranslateFile" class="com.puhui.commenttranslator.actions.TranslateFileAction" text="检查 / 继续翻译当前文件"/>
       <action id="CommentTranslator.TranslateComment" class="com.puhui.commenttranslator.actions.TranslateCommentAction" text="翻译当前注释"/>
       <action id="CommentTranslator.ToggleVisible" class="com.puhui.commenttranslator.actions.ToggleVisibleAction" text="显示 / 隐藏译文"/>
       <action id="CommentTranslator.ToggleAutomatic" class="com.puhui.commenttranslator.actions.ToggleAutomaticAction" text="自动翻译"/>
