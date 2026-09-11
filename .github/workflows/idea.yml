@@ -2,20 +2,15 @@ name: IDEA plugin
 
 on:
   push:
-    branches:
-      - master-idea
     tags:
       - 'idea-v*'
-    paths:
-      - 'idea-plugin/**'
-      - '.github/workflows/idea.yml'
 
 permissions:
   contents: read
 
 concurrency:
   group: idea-${{ github.ref }}
-  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+  cancel-in-progress: false
 
 jobs:
   build:

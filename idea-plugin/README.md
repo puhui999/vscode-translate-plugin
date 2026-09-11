@@ -121,7 +121,7 @@ cd idea-plugin
 
 运行沙箱也可传 `-PlocalIdePath`；可选 `-PqaProject="/path/to/test-project"` 指定测试项目。单元测试、平台测试和接口验证使用 Mock 数据或本地 HTTP 服务，不需要模型 Key。测试报告在 `build/reports/tests/test/index.html`，JUnit XML 在 `build/test-results/test/`。
 
-独立的 [IDEA 工作流](../.github/workflows/idea.yml) 在相关分支变更时测试和打包；与 `gradle.properties` 中 `pluginVersion` 一致的 `idea-v*` 标签会触发 GitHub 预发布，上传插件 ZIP 与 `SHA256SUMS.txt`。JUnit/HTML 报告作为 Actions 产物保留。该流程不发布到 JetBrains Marketplace。CI 在 Linux 上独立打包，产物的校验值可能与本地 ZIP 不同；下载发布包时，以同一 Release 附带的 `SHA256SUMS.txt` 为准。
+独立的 [IDEA 工作流](../.github/workflows/idea.yml) 仅在推送与 `gradle.properties` 中 `pluginVersion` 一致的 `idea-v*` 标签时运行测试、打包并创建 GitHub 预发布，上传插件 ZIP 与 `SHA256SUMS.txt`。分支推送和 Pull Request 均不触发构建。JUnit/HTML 报告作为 Actions 产物保留。该流程不发布到 JetBrains Marketplace。CI 在 Linux 上独立打包，产物的校验值可能与本地 ZIP 不同；下载发布包时，以同一 Release 附带的 `SHA256SUMS.txt` 为准。
 
 既有功能范围见本文及 [0.1.5 发布说明](../.github/release-notes/idea-v0.1.5.md) 为准；[0.1.2 发布说明](../.github/release-notes/idea-v0.1.2.md) 与 [0.1.1 验收记录](QA-0.1.1.md) 保留历史功能及验证边界，不代表本版新增行为的验收结果。[原可行性方案](../docs/intellij-idea-feasibility.md) 保留早期设计背景，其中上下 Inlay 的默认方案已根据实际体验反馈调整。
 
