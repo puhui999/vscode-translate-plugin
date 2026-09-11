@@ -4,7 +4,7 @@
   <vendor url="https://github.com/puhui999/vscode-translate-plugin">puhui999</vendor>
   <description><![CDATA[
     在原注释位置显示 AI 译文，独立注释支持无边框多行排版，悬停查看原文，点击后编辑。
-    支持自定义 OpenAI 兼容服务、批量请求、本地 SQLite 缓存，以及可选的上下对照显示。
+    支持自定义 OpenAI 兼容服务、逐条并发请求、目标语言识别、本地 SQLite 缓存，以及可选的上下对照显示。
     译文不会写入源码。包含无需 API 的离线体验示例。
   ]]></description>
   <depends>com.intellij.modules.platform</depends>

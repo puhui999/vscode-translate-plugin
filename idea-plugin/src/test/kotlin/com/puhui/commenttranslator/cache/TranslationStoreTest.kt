@@ -32,6 +32,15 @@ class TranslationStoreTest {
         assertFalse(cacheContext("java", config).contains(config.prompt))
     }
 
+    @Test fun requestTuningKeepsPreviouslyTranslatedCommentsReusable() {
+        val key = cacheKey("Cached comment", "java", config)
+        listOf(config.copy(maxConcurrency = 1), config.copy(maxConcurrency = 64),
+            config.copy(responseFormat = "text"), config.copy(temperature = 1.5),
+            config.copy(thinkingMode = "disabled")).forEach {
+            assertEquals(key, cacheKey("Cached comment", "java", it))
+        }
+    }
+
     @Test fun storesActualSourceAndTranslationAndPersistsAcrossReopen() {
         val database = path()
         val key = cacheKey("Original source", "java", config)

@@ -11,7 +11,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.concurrent.atomic.AtomicLong
 
-/** Shares three background workers and one persistent cache across projects in this IDE. */
+/** Shares file coordinators, a separately bounded HTTP request client, and persistent cache across IDE projects. */
 @Service(Service.Level.APP)
 class TranslationRuntime : Disposable {
     val workers = Executors.newFixedThreadPool(3) { runnable -> Thread(runnable, "comment-translator-worker").apply { isDaemon = true } }

@@ -22,6 +22,10 @@ data class TranslationSettingsState(
     var timeoutSeconds: Int = 60,
     var maxBatchChars: Int = 16000,
     var displayMode: String = "replacement",
+    var maxConcurrency: Int = 10,
+    var responseFormat: String = "json_object",
+    var temperature: Double = 0.2,
+    var thinkingMode: String = "provider",
 )
 
 /** Persists provider configuration outside project files. */
@@ -68,8 +72,7 @@ class TranslationSettings : PersistentStateComponent<TranslationSettingsState> {
         val snapshot = value.copy()
         require(snapshot.baseUrl.isNotBlank() && snapshot.model.isNotBlank()) { "请先配置服务地址和模型。" }
         val key = PasswordSafe.instance.getPassword(attributes(snapshot.baseUrl)) ?: ""
-        return ProviderConfig(snapshot.baseUrl, snapshot.model, key, snapshot.targetLanguage, snapshot.prompt,
-            snapshot.timeoutSeconds.coerceIn(5, 300), snapshot.maxBatchChars.coerceIn(1000, 200000))
+        return snapshot.providerConfig(key)
     }
 
     companion object {
@@ -84,3 +87,20 @@ class TranslationSettings : PersistentStateComponent<TranslationSettingsState> {
         }
     }
 }
+
+/** Converts a settings snapshot into bounded request options without accessing the credential store. */
+internal fun TranslationSettingsState.providerConfig(apiKey: String): ProviderConfig = ProviderConfig(
+    baseUrl = baseUrl,
+    model = model,
+    apiKey = apiKey,
+    targetLanguage = targetLanguage,
+    prompt = prompt,
+    timeoutSeconds = timeoutSeconds.coerceIn(5, 300),
+    maxBatchChars = maxBatchChars.coerceIn(1000, 200000),
+    maxConcurrency = maxConcurrency.coerceIn(1, 64),
+    responseFormat = if (responseFormat == "text") "text" else "json_object",
+    temperature = if (temperature.isFinite()) temperature.coerceIn(0.0, 2.0) else 0.2,
+    thinkingMode = thinkingMode.takeIf { it in THINKING_MODES } ?: "provider",
+)
+
+internal val THINKING_MODES = listOf("provider", "disabled", "enabled")

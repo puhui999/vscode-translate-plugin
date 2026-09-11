@@ -13,6 +13,7 @@ import java.awt.BorderLayout
 import java.awt.GridBagConstraints
 import java.awt.GridBagLayout
 import java.awt.Insets
+import java.text.ParseException
 import javax.swing.*
 
 /** Native settings UI; saving a key never serializes it with ordinary settings. */
@@ -26,7 +27,15 @@ class TranslationConfigurable : Configurable {
     private val deleteKey = JCheckBox("删除此服务已保存的 Key（无需认证的服务可不配置 Key）")
     private val timeout = JSpinner(SpinnerNumberModel(60, 5, 300, 5))
     private val budget = JSpinner(SpinnerNumberModel(16000, 1000, 200000, 1000))
+    private val concurrency = JSpinner(SpinnerNumberModel(10, 1, 64, 1))
+    private val responseFormat = JComboBox(arrayOf("JSON Object（默认）", "兼容文本（不发送 response_format）"))
+    private val temperature = JSpinner(SpinnerNumberModel(0.2, 0.0, 2.0, 0.1)).apply {
+        editor = JSpinner.NumberEditor(this, "0.0##")
+    }
     private val displayMode = JComboBox(arrayOf("原位译文（默认）", "上下对照"))
+    private val thinkingMode = JComboBox(arrayOf(
+        "服务默认（不发送）", "关闭思考", "开启思考",
+    ))
     private var panel: JPanel? = null
 
     /** Names the settings page. */
@@ -37,7 +46,7 @@ class TranslationConfigurable : Configurable {
         val form = JPanel(GridBagLayout())
         var row = 0
         fun add(label: String, component: JComponent) {
-            form.add(JLabel(label), GridBagConstraints().apply {
+            form.add(JLabel(label).apply { labelFor = component }, GridBagConstraints().apply {
                 gridx = 0; gridy = row; anchor = GridBagConstraints.NORTHWEST; insets = Insets(7, 0, 7, 14)
             })
             form.add(component, GridBagConstraints().apply {
@@ -53,23 +62,43 @@ class TranslationConfigurable : Configurable {
         prompt.lineWrap = true; prompt.wrapStyleWord = true
         add("附加翻译要求", JScrollPane(prompt))
         add("请求超时（秒）", timeout)
-        add("批次字符预算", budget)
+        add("同时翻译的注释数", concurrency)
+        add("", JLabel("每条注释独立请求，完成一条显示一条；并发数可设 1–64。"))
+        add("输出格式", responseFormat)
+        add("思考模式", thinkingMode)
+        add("温度", temperature)
+        add("", JLabel("DeepSeek 思考模式下温度参数不生效；关闭思考可加快翻译。"))
+        add("单条注释字符上限", budget)
+        add("", JLabel("超过上限的注释会提示调整设置，不会拆分注释。"))
         add("源码显示方式", displayMode)
         add("", JLabel("原位译文：悬停查看原文，点击后编辑；不会修改源文件。"))
         add("", automatic)
         add("", JLabel("配置后注释会发送到此服务；已缓存内容直接复用。"))
         add("", JLabel("工具 → 注释译读 → 打开离线体验示例，无需 API 即可查看效果。"))
-        panel = JPanel(BorderLayout()).apply { add(form, BorderLayout.NORTH) }
+        val content = JPanel(BorderLayout()).apply { add(form, BorderLayout.NORTH) }
+        panel = JPanel(BorderLayout()).apply {
+            add(JScrollPane(content).apply { border = BorderFactory.createEmptyBorder() }, BorderLayout.CENTER)
+        }
         reset()
         return panel!!
     }
 
     /** Detects changes while keeping the saved secret out of the UI. */
-    override fun isModified(): Boolean = readForm() != TranslationSettings.getInstance().state || key.password.isNotEmpty() || deleteKey.isSelected
+    override fun isModified(): Boolean {
+        try { commitNumericFields() } catch (_: ParseException) { return true }
+        return readForm() != TranslationSettings.getInstance().state || key.password.isNotEmpty() || deleteKey.isSelected
+    }
 
     /** Validates settings and saves credentials in a background task before restarting translation. */
     override fun apply() {
+        try { commitNumericFields() } catch (_: ParseException) {
+            throw ConfigurationException("请输入有效数值：并发数 1–64、温度 0–2、超时 5–300 秒、单条注释字符上限 1,000–200,000。")
+        }
         val next = readForm()
+        if (next.maxConcurrency !in 1..64 || !next.temperature.isFinite() || next.temperature !in 0.0..2.0 ||
+            next.timeoutSeconds !in 5..300 || next.maxBatchChars !in 1000..200000) {
+            throw ConfigurationException("请输入有效数值：并发数 1–64、温度 0–2、超时 5–300 秒、单条注释字符上限 1,000–200,000。")
+        }
         if (next.baseUrl.isNotBlank()) {
             try { normalizeEndpoint(next.baseUrl) } catch (_: Exception) {
                 throw ConfigurationException("请输入 HTTP/HTTPS 服务地址，支持 /v1 或完整 /chat/completions 地址。")
@@ -85,11 +114,12 @@ class TranslationConfigurable : Configurable {
         val settings = TranslationSettings.getInstance()
         val previous = settings.state.copy()
         if (!settings.saving && password.isEmpty() && !remove &&
-            previous.copy(automatic = next.automatic, displayMode = next.displayMode) == next) {
+            previous.copy(automatic = next.automatic, displayMode = next.displayMode, maxConcurrency = next.maxConcurrency) == next) {
             settings.update(next)
             ProjectManager.getInstance().openProjects.filterNot { it.isDisposed }.forEach {
                 val controller = TranslationController.getInstance(it)
                 if (previous.displayMode != next.displayMode) controller.displayConfigurationChanged()
+                if (previous.maxConcurrency != next.maxConcurrency) controller.requestConcurrencyChanged()
                 if (previous.automatic != next.automatic) controller.automaticChanged()
             }
             password.fill('\u0000')
@@ -120,6 +150,10 @@ class TranslationConfigurable : Configurable {
         endpoint.text = state.baseUrl; model.text = state.model; language.text = state.targetLanguage
         prompt.text = state.prompt; automatic.isSelected = state.automatic
         timeout.value = state.timeoutSeconds.coerceIn(5, 300); budget.value = state.maxBatchChars.coerceIn(1000, 200000)
+        concurrency.value = state.maxConcurrency.coerceIn(1, 64)
+        responseFormat.selectedIndex = if (state.responseFormat == "text") 1 else 0
+        temperature.value = if (state.temperature.isFinite()) state.temperature.coerceIn(0.0, 2.0) else 0.2
+        thinkingMode.selectedIndex = THINKING_MODES.indexOf(state.thinkingMode).coerceAtLeast(0)
         displayMode.selectedIndex = if (state.displayMode == "inlays") 1 else 0
         key.text = ""; deleteKey.isSelected = false
     }
@@ -127,7 +161,22 @@ class TranslationConfigurable : Configurable {
     /** Clears sensitive input when the settings page closes. */
     override fun disposeUIResources() { key.text = ""; panel = null }
 
-    private fun readForm() = TranslationSettingsState(endpoint.text.trim(), model.text.trim(), language.text.trim().ifEmpty { "简体中文" },
-        prompt.text, automatic.isSelected, timeout.value as Int, budget.value as Int,
-        if (displayMode.selectedIndex == 1) "inlays" else "replacement")
+    private fun commitNumericFields() {
+        listOf(timeout, budget, concurrency, temperature).forEach { it.commitEdit() }
+    }
+
+    private fun readForm() = TranslationSettingsState(
+        baseUrl = endpoint.text.trim(),
+        model = model.text.trim(),
+        targetLanguage = language.text.trim().ifEmpty { "简体中文" },
+        prompt = prompt.text,
+        automatic = automatic.isSelected,
+        timeoutSeconds = (timeout.value as Number).toInt(),
+        maxBatchChars = (budget.value as Number).toInt(),
+        displayMode = if (displayMode.selectedIndex == 1) "inlays" else "replacement",
+        maxConcurrency = (concurrency.value as Number).toInt(),
+        responseFormat = if (responseFormat.selectedIndex == 1) "text" else "json_object",
+        temperature = (temperature.value as Number).toDouble(),
+        thinkingMode = THINKING_MODES.getOrElse(thinkingMode.selectedIndex) { "provider" },
+    )
 }

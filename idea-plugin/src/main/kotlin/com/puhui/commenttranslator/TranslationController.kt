@@ -74,6 +74,9 @@ private class FileSession(val file: VirtualFile, val document: Document) : Dispo
     var status = "等待翻译"
     var cacheHits = 0
     var remaining = 0
+    /** Unchanged results remain processed/cacheable without creating duplicate editor decorations. */
+    fun translatedBody(block: CommentBlock): String? = translations[block.id]?.takeIf { it != block.text }
+
     /** Releases only this file's visual resources. */
     override fun dispose() { generation.incrementAndGet(); timer?.cancel(false); future?.cancel(true) }
 }
@@ -94,6 +97,7 @@ class TranslationController(private val project: Project) : Disposable {
     fun start() = onUi {
         if (started) return@onUi
         started = true
+        runtime.client.configureConcurrency(settings.state.maxConcurrency.coerceIn(1, 64))
         ApplicationManager.getApplication().messageBus.connect(this).subscribe(TrustedProjectsListener.TOPIC, object : TrustedProjectsListener {
             override fun onProjectTrusted(project: Project) {
                 if (project === this@TranslationController.project) onUi { FileEditorManager.getInstance(project).openFiles.forEach(::consider) }
@@ -146,6 +150,7 @@ class TranslationController(private val project: Project) : Disposable {
     /** Applies changed provider settings and invalidates results from previous settings. */
     fun configurationChanged() = onUi {
         start()
+        runtime.client.configureConcurrency(settings.state.maxConcurrency.coerceIn(1, 64))
         sessions.values.forEach { session ->
             if (session.file.getUserData(DEMO_FILE) != true) {
                 cancel(session); session.blocks = emptyList(); session.translations = emptyMap(); session.version = -1; session.completion.invalidate()
@@ -208,6 +213,12 @@ class TranslationController(private val project: Project) : Disposable {
         refreshStatus()
     }
 
+    /** Adjusts the shared HTTP limit without cancelling work or clearing displayed/cache results. */
+    fun requestConcurrencyChanged() = onUi {
+        runtime.client.configureConcurrency(settings.state.maxConcurrency.coerceIn(1, 64))
+        refreshStatus()
+    }
+
     /** Opens the native provider settings page. */
     fun openSettings() { ShowSettingsUtil.getInstance().showSettingsDialog(project, "注释译读") }
 
@@ -230,12 +241,12 @@ class TranslationController(private val project: Project) : Disposable {
     fun openReader(target: TranslationActionTarget? = null) = onUi {
         val file = activeFile(target) ?: return@onUi
         val state = sessions[file]
-        if (state == null || state.translations.isEmpty() || state.version != state.document.modificationStamp) {
+        if (state == null || state.blocks.none { state.translatedBody(it) != null } || state.version != state.document.modificationStamp) {
             notifyTranslation(project, "当前文件还没有可阅读的译文，请先翻译注释。", false); return@onUi
         }
         var text = state.document.text
         state.blocks.sortedByDescending { it.startOffset }.forEach { block ->
-            state.translations[block.id]?.let {
+            state.translatedBody(block)?.let {
                 val formatted = CommentFormatter.format(block, it).lines().mapIndexed { index, line -> if (index == 0) line else block.indent + line }.joinToString("\n")
                 text = text.replaceRange(block.startOffset, block.endOffset, formatted)
             }
@@ -382,6 +393,10 @@ class TranslationController(private val project: Project) : Disposable {
                     session.generation.get() == generation && session.document.modificationStamp == initialVersion &&
                     sessions[session.file] === session && session.file.isValid
                 if (!current()) return@submit
+                val progress = TranslationProgress(
+                    schedule = { deliver -> runtime.timer.schedule({ onUi(deliver) }, 40, TimeUnit.MILLISECONDS) },
+                    isCurrent = ::current,
+                )
                 try {
                     val snapshot = ReadAction.nonBlocking<ScanSnapshot> {
                         if (session.document.textLength > MAX_DOCUMENT_CHARS) throw IllegalArgumentException("文件过大，验证版最多处理 200 万字符。")
@@ -425,10 +440,11 @@ class TranslationController(private val project: Project) : Disposable {
                                     blocks.forEach { results[it.id] = translated }
                                 }
                                 val partial = results.toMap()
-                                onUi { if (current()) applyResults(session, snapshot, partial, "翻译中 · ${partial.size}/${snapshot.blocks.size}", hits, remaining) }
+                                progress.publish { applyResults(session, snapshot, partial, "翻译中 · ${partial.size}/${snapshot.blocks.size}", hits, remaining) }
                             }
                         })
                     val completed = results.toMap()
+                    progress.finish()
                     onUi { if (current()) {
                         applyResults(session, snapshot, completed, completeLabel(completed.size, hits, remaining), hits, remaining, onlyOffset == null)
                         if (!automatic) notifyTranslation(project, "${session.file.name}：${completeLabel(completed.size, hits, remaining)}", false)
@@ -437,13 +453,18 @@ class TranslationController(private val project: Project) : Disposable {
                 } catch (_: ProcessCanceledException) { /* A write, cancellation or project close invalidated the read. */
                 } catch (_: InterruptedException) { Thread.currentThread().interrupt()
                 } catch (error: Exception) {
+                    // Flush successful comments before showing a failed request's final status.
+                    val pending = progress.finish()
                     if (current()) onUi {
                         if (current()) {
+                            pending?.invoke()
                             session.status = if (error is TranslationException) "${error.message ?: "翻译失败"} · 可重试" else "处理失败 · 请重试"
                             refreshStatus()
                             if (!automatic) notifyTranslation(project, session.status, true)
                         }
                     }
+                } finally {
+                    progress.finish()
                 }
             }
         }
@@ -459,7 +480,7 @@ class TranslationController(private val project: Project) : Disposable {
     private fun render(session: FileSession) {
         val editors = EditorFactory.getInstance().getEditors(session.document, project).filterNot { it.isDisposed }
         val items = if (!session.visible || session.version != session.document.modificationStamp) emptyList() else session.blocks.mapNotNull { block ->
-            session.translations[block.id]?.let { DisplayTranslation(block.id, block.startOffset, block.endOffset, CommentFormatter.format(block, it), block.indent, block.rawText) }
+            session.translatedBody(block)?.let { DisplayTranslation(block.id, block.startOffset, block.endOffset, CommentFormatter.format(block, it), block.indent, block.rawText) }
         }
         editors.forEach { editor ->
             val replacement = settings.state.displayMode != "inlays"
@@ -480,7 +501,7 @@ class TranslationController(private val project: Project) : Disposable {
         val session = sessions[file]
         val valid = session != null && session.version == session.document.modificationStamp
         return TranslationActionState(true, session?.future?.isDone == false || session?.timer?.isDone == false,
-            valid && session.translations.isNotEmpty(), currentBlock(target) != null, session?.visible ?: true)
+            valid && session.blocks.any { session.translatedBody(it) != null }, currentBlock(target) != null, session?.visible ?: true)
     }
 
     private fun activeEditor(target: TranslationActionTarget?): Editor? =
@@ -500,7 +521,7 @@ class TranslationController(private val project: Project) : Disposable {
         val offset = target?.offset ?: editor.caretModel.offset
         val foldedId = editor.foldingModel.getCollapsedRegionAtOffset(offset)?.getUserData(TRANSLATED_COMMENT_ID)
         val block = session.blocks.firstOrNull {
-            (it.id == foldedId || offset in it.startOffset until it.endOffset) && session.translations.containsKey(it.id)
+            (it.id == foldedId || offset in it.startOffset until it.endOffset) && session.translatedBody(it) != null
         } ?: return null
         return session to block
     }
