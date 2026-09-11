@@ -7,7 +7,7 @@
 | 编辑器 | 开发分支 | 当前版本与下载 | 完整说明 |
 | --- | --- | --- | --- |
 | IntelliJ IDEA | [master-idea](https://github.com/puhui999/ai-comment-translator/tree/master-idea) | [0.1.6 预览版 ZIP](https://github.com/puhui999/ai-comment-translator/releases/tag/idea-v0.1.6) | [IDEA 使用与开发说明](idea-plugin/README.md) |
-| VS Code | [master-vscode](https://github.com/puhui999/ai-comment-translator/tree/master-vscode) | [已发布 0.2.6 VSIX](https://github.com/puhui999/ai-comment-translator/releases/tag/v0.2.6)；分支源码为 0.2.7，尚未发布 | [VS Code 使用与开发说明](https://github.com/puhui999/ai-comment-translator/blob/master-vscode/README.md) |
+| VS Code | [master-vscode](https://github.com/puhui999/ai-comment-translator/tree/master-vscode) | [0.2.7 VSIX](https://github.com/puhui999/ai-comment-translator/releases/tag/v0.2.7) | [VS Code 使用与开发说明](https://github.com/puhui999/ai-comment-translator/blob/master-vscode/README.md) |
 
 ## IDEA 版的阅读体验
 
