@@ -6,18 +6,18 @@
 
 | 编辑器 | 维护分支与使用文档 | 当前源码 | 最新发布安装包 |
 | --- | --- | --- | --- |
-| VS Code | [master-vscode](https://github.com/puhui999/ai-comment-translator/blob/master-vscode/README.md) | 0.2.7，待发布 | [v0.2.6 · VSIX](https://github.com/puhui999/ai-comment-translator/releases/tag/v0.2.6) |
+| VS Code | [master-vscode](https://github.com/puhui999/ai-comment-translator/blob/master-vscode/README.md) | 0.2.7 | [v0.2.7 · VSIX](https://github.com/puhui999/ai-comment-translator/releases/tag/v0.2.7) |
 | IntelliJ IDEA | [master-idea](https://github.com/puhui999/ai-comment-translator/blob/master-idea/idea-plugin/README.md) | 0.1.6，已发布预览版 | [idea-v0.1.6 · ZIP](https://github.com/puhui999/ai-comment-translator/releases/tag/idea-v0.1.6) |
 
 仓库默认分支为 `master-idea`；开发 VS Code 版本请切换到 `master-vscode`。两个版本分别适配各自编辑器，独立维护版本、设置与本地 SQLite 缓存，不自动共享配置或译文。
 
-**本文说明当前 VS Code 0.2.7 源码的行为。** 单条注释并发、可配置温度与思考模式、同语短标识等更新尚未包含在已发布的 v0.2.6 安装包中，体验这些功能需自行构建当前分支。IDEA 0.1.6 的 JavaDoc 校验修复属于 IDEA 版本，不能据此判断 VS Code 已包含相同修复。
+**本文对应 VS Code 0.2.7。** 本版新增单条注释并发、可配置温度与思考模式、同语短标识，并默认使用源码原位译文与 JSON Object 输出，详见 [0.2.7 发布说明](https://github.com/puhui999/ai-comment-translator/blob/master-vscode/.github/release-notes/v0.2.7.md)。IDEA 0.1.6 的 JavaDoc 校验修复属于 IDEA 版本，不能据此判断 VS Code 已包含相同修复。
 
 ## 安装和体验
 
 要求 VS Code **1.85.0 及以上**，并在受信任的本地工作区中使用。
 
-1. 从 [VS Code v0.2.6 Release](https://github.com/puhui999/ai-comment-translator/releases/tag/v0.2.6) 下载 `.vsix`；自行构建 0.2.7 则在 `master-vscode` 运行 `npm ci` 和 `npm run package`，安装包生成在 `artifacts/`。
+1. 下载 [vscode-translate-plugin-0.2.7.vsix](https://github.com/puhui999/ai-comment-translator/releases/download/v0.2.7/vscode-translate-plugin-0.2.7.vsix)；自行构建则在 `master-vscode` 运行 `npm ci` 和 `npm run package`，安装包生成在 `artifacts/`。
 2. 在 VS Code 命令面板执行 **Extensions: Install from VSIX…**，选择下载或本地构建的安装包，按提示重新加载窗口。
 3. 执行 **注释译读：打开离线效果示例（无需 API）**，默认在源码中体验原位译文；执行 **注释译读：打开无边框多行阅读视图** 可查看多行对照。示例遵循已保存的显示模式，使用预置译文，不调用模型、不写入翻译缓存。
 4. 执行 **注释译读：打开翻译设置**，填写服务地址、模型名和 API Key；也可使用 **配置模型服务** 向导。
