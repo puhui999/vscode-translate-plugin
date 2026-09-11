@@ -2,9 +2,11 @@
 
 在 VS Code 中批量翻译代码注释。默认打开无边框的只读源码对照视图：独立注释、文档注释在下方显示多行译文，行尾注释在原注释后追加译文。原生源码编辑器在原注释位置逐行显示译文，悬停查看原文。译文不会写入源文件，不影响源码保存或 Git diff。
 
+版本导航：[VS Code（master-vscode）](https://github.com/puhui999/ai-comment-translator/blob/master-vscode/README.md) · [IntelliJ IDEA（master-idea）](https://github.com/puhui999/ai-comment-translator/blob/master-idea/idea-plugin/README.md)。
+
 ## 安装和体验
 
-1. 从 [GitHub Releases](https://github.com/puhui999/vscode-translate-plugin/releases/latest) 下载最新 `.vsix`；自行构建则运行 `npm ci` 和 `npm run package`。
+1. 从 [GitHub Releases](https://github.com/puhui999/ai-comment-translator/releases/latest) 下载最新 `.vsix`；自行构建则运行 `npm ci` 和 `npm run package`。
 2. 在 VS Code 命令面板执行 **Extensions: Install from VSIX…**，选择 `artifacts/` 下的安装包。
 3. 执行 **注释译读：打开离线效果示例（无需 API）**，可直接看到无边框多行阅读视图；点击“返回源码”可体验原位译文。示例使用预置译文，不调用模型、不写入翻译缓存。
 4. 执行 **注释译读：打开翻译设置**，填写服务地址、模型名和 API Key；也可使用 **配置模型服务** 向导。
