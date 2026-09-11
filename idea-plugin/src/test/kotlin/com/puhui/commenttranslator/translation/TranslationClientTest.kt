@@ -155,6 +155,49 @@ class TranslationClientTest {
         assertEquals(mapOf("a" to "译文"), result)
     }
 
+    @Test fun acceptsNaturalChineseJavadocWithoutUnnecessaryRepairs() {
+        val calls = AtomicInteger()
+        val callbacks = mutableListOf<Map<String, String>>()
+        val translated = client(TranslationTransport { _, _, body, _, _ ->
+            calls.incrementAndGet()
+            val item = inputItems(body).single()
+            assertEquals(ChatClientJavadocFixture.source, item.text)
+            response(listOf(item.id to ChatClientJavadocFixture.translation))
+        }).translate(listOf(TranslationItem("javadoc", ChatClientJavadocFixture.source)), config, { false }, callbacks::add)
+        assertEquals(1, calls.get())
+        assertEquals(mapOf("javadoc" to ChatClientJavadocFixture.translation), translated)
+        assertEquals(listOf(translated), callbacks)
+    }
+
+    @Test fun distinguishesTruncatedModelOutputFromInvalidJsonAfterBoundedRepair() {
+        val calls = AtomicInteger()
+        val failure = assertThrows(TranslationException::class.java) {
+            client(TranslationTransport { _, _, _, _, _ ->
+                calls.incrementAndGet()
+                response(emptyList(), "length")
+            }).translate(items.take(1), config, { false }, {})
+        }
+        assertEquals("OUTPUT_TRUNCATED", failure.code)
+        assertTrue(failure.message!!.contains("长度限制"))
+        assertEquals(3, calls.get())
+        assertTrue(failure.partialTranslations.isEmpty())
+    }
+
+    @Test fun distinguishesChangedDocumentationFromMissingTranslationsAndKeepsSuccessfulSiblings() {
+        val calls = AtomicInteger()
+        val failure = assertThrows(TranslationException::class.java) {
+            client(TranslationTransport { _, _, body, _, _ ->
+                calls.incrementAndGet()
+                val item = inputItems(body).single()
+                response(listOf(item.id to if (item.id == "doc") "@param changed 错误参数。" else "普通译文。"))
+            }).translate(listOf(TranslationItem("doc", "@param userId User ID."), items[0]), config, { false }, {})
+        }
+        assertEquals("INVALID_STRUCTURE", failure.code)
+        assertTrue(failure.message!!.contains("引用目标"))
+        assertEquals(mapOf("a" to "普通译文。"), failure.partialTranslations)
+        assertEquals(3, calls.get())
+    }
+
     @Test fun sendsOnlyExplicitThinkingOverridesAndConfiguredTemperature() {
         for (mode in listOf("provider", "disabled", "enabled")) {
             client(TranslationTransport { _, _, body, _, _ ->

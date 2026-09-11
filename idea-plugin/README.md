@@ -2,13 +2,20 @@
 
 分支导航：[IntelliJ IDEA · master-idea](https://github.com/puhui999/ai-comment-translator/tree/master-idea) · [VS Code · master-vscode](https://github.com/puhui999/ai-comment-translator/tree/master-vscode)。本文对应 IDEA 插件 ZIP；VS Code 使用其分支中的 VSIX 安装包。
 
-版本 `0.1.5`。默认在原注释位置显示 AI 译文，悬停查看原文，点击后查看、编辑原注释，光标和选区离开后自动恢复译文。独立注释采用无边框多行排版；设置中也可选择原文与译文上下对照。显示使用编辑器的折叠或 Inlay 机制，译文不写入源文件，保存、撤销、普通复制和 Git diff 仍基于源码。
+版本 `0.1.6`。默认在原注释位置显示 AI 译文，悬停查看原文，点击后查看、编辑原注释，光标和选区离开后自动恢复译文。独立注释采用无边框多行排版；设置中也可选择原文与译文上下对照。显示使用编辑器的折叠或 Inlay 机制，译文不写入源文件，保存、撤销、普通复制和 Git diff 仍基于源码。
 
 开发基线为 IntelliJ IDEA `2026.2.0.1 / 262.8665.337`，安装包声明的兼容范围为 `262.8665` 至 `262.*`。当前是 IDEA 预览版，尚未承诺其他 JetBrains IDE 或旧版 IDEA 的兼容性。
 
+## 0.1.6 文档注释修复
+
+- 修复合法中文 JavaDoc 被结构校验误拒：允许同一说明段内的 `{@link}` / `{@code}` 随中文语序调整位置，仍保留标签、引用目标、代码和重复次数；不同参数说明或 HTML 段落之间不能搬移引用。
+- `@return` 后的 `{@link Builder}` 等行内标签不再被误当成 `{Type}` 类型声明。真正的 JSDoc/PHPDoc 类型与参数名仍校验保护。
+- 错误提示区分模型输出截断、文档结构不匹配，以及空译文/缺失或重复 ID。没有模型的原始响应时，不能仅凭旧提示断定发生过截断。
+- 当前 IDEA 请求不主动发送 `max_tokens` / `max_completion_tokens`；单条字符上限限制输入，不会截断发送的注释。失败结果不缓存，安装修复版后重试当前文件即可复用成功缓存并补翻失败项。
+
 ## 安装与离线体验
 
-1. 从 [0.1.5 Release](https://github.com/puhui999/ai-comment-translator/releases/tag/idea-v0.1.5) 下载 [idea-comment-translator-0.1.5.zip](https://github.com/puhui999/ai-comment-translator/releases/download/idea-v0.1.5/idea-comment-translator-0.1.5.zip)。可用同一 Release 附带的 `SHA256SUMS.txt` 核对下载文件；安装时直接选择 ZIP，无需解压。
+1. 从 [0.1.6 Release](https://github.com/puhui999/ai-comment-translator/releases/tag/idea-v0.1.6) 下载 [idea-comment-translator-0.1.6.zip](https://github.com/puhui999/ai-comment-translator/releases/download/idea-v0.1.6/idea-comment-translator-0.1.6.zip)。可用同一 Release 附带的 `SHA256SUMS.txt` 核对下载文件；安装时直接选择 ZIP，无需解压。
 2. 在 IDEA 中打开 **Settings → Plugins → 齿轮菜单 → Install Plugin from Disk**，选择 ZIP，按提示完成安装。
 3. 打开一个项目，运行 **Tools → 注释译读 → 打开离线体验示例**。示例包含行注释、行尾注释、单行/多行文档注释和长译文；使用固定译文，不调用模型，也不写入翻译缓存。
 4. 运行 **Tools → 注释译读 → 配置翻译服务…**，填写自己的服务地址和模型。API Key 如有需要也在此设置。
@@ -98,7 +105,7 @@ cd idea-plugin
 ./gradlew test buildPlugin
 ```
 
-默认从官方仓库解析 IDEA `2026.2.0.1` 及构建依赖。产物为 `build/distributions/idea-comment-translator-0.1.5.zip`；Windows 使用 `gradlew.bat`。
+默认从官方仓库解析 IDEA `2026.2.0.1` 及构建依赖。产物为 `build/distributions/idea-comment-translator-0.1.6.zip`；Windows 使用 `gradlew.bat`。
 
 也可指定本机同版本 IDEA，减少下载：
 
@@ -116,6 +123,6 @@ cd idea-plugin
 
 独立的 [IDEA 工作流](../.github/workflows/idea.yml) 在相关分支变更时测试和打包；与 `gradle.properties` 中 `pluginVersion` 一致的 `idea-v*` 标签会触发 GitHub 预发布，上传插件 ZIP 与 `SHA256SUMS.txt`。JUnit/HTML 报告作为 Actions 产物保留。该流程不发布到 JetBrains Marketplace。CI 在 Linux 上独立打包，产物的校验值可能与本地 ZIP 不同；下载发布包时，以同一 Release 附带的 `SHA256SUMS.txt` 为准。
 
-当前版本的功能范围以本文及 [0.1.5 发布说明](../.github/release-notes/idea-v0.1.5.md) 为准；[0.1.2 发布说明](../.github/release-notes/idea-v0.1.2.md) 与 [0.1.1 验收记录](QA-0.1.1.md) 保留历史功能及验证边界，不代表本版新增行为的验收结果。[原可行性方案](../docs/intellij-idea-feasibility.md) 保留早期设计背景，其中上下 Inlay 的默认方案已根据实际体验反馈调整。
+既有功能范围见本文及 [0.1.5 发布说明](../.github/release-notes/idea-v0.1.5.md) 为准；[0.1.2 发布说明](../.github/release-notes/idea-v0.1.2.md) 与 [0.1.1 验收记录](QA-0.1.1.md) 保留历史功能及验证边界，不代表本版新增行为的验收结果。[原可行性方案](../docs/intellij-idea-feasibility.md) 保留早期设计背景，其中上下 Inlay 的默认方案已根据实际体验反馈调整。
 
-`0.1.5` 发布前本地执行的 175 项测试与同语短响应验证见 [发布前本地验证记录](QA-0.1.5.md)；并发配置的桌面验证见 [0.1.4 验收记录](QA-0.1.4.md)，历史记录保留在 [0.1.2 验收记录](QA-0.1.2.md)。GitHub Actions 的运行结果需单独查看对应发布工作流。
+`0.1.6` 的回归及本地构建见 [文档注释修复验证记录](QA-0.1.6.md)。`0.1.5` 发布前本地执行的 175 项测试与同语短响应验证见 [发布前本地验证记录](QA-0.1.5.md)；并发配置的桌面验证见 [0.1.4 验收记录](QA-0.1.4.md)，历史记录保留在 [0.1.2 验收记录](QA-0.1.2.md)。GitHub Actions 的运行结果需单独查看对应发布工作流。

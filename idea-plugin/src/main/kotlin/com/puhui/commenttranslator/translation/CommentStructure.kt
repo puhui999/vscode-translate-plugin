@@ -10,14 +10,17 @@ private val SIMPLE_TYPES = Regex("^(?:any|array|bigint|bool|boolean|byte|callabl
 private val DOCUMENT_TAG = Regex("^[\\t ]*@([A-Za-z][A-Za-z0-9_-]*)(?=[\\t \\[]|$)([^\\r\\n]*)", RegexOption.MULTILINE)
 private val INLINE_TAG = Regex("\\{@([A-Za-z][A-Za-z0-9_-]*)(?=\\s|\\})")
 private val MARKUP_TAG = Regex("""</?[A-Za-z][A-Za-z0-9_.:-]*(?:\s+[A-Za-z_:][A-Za-z0-9_.:-]*(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+))?)*\s*/?>""")
+// Treat CRLF as one indivisible line ending, never as two newlines forming a blank paragraph.
+private val PARAGRAPH_BREAK = Regex("""(?>\r\n|\r|\n)[\t ]*(?>\r\n|\r|\n)(?:[\t ]*(?>\r\n|\r|\n))*""")
 
 private data class StructureToken(val text: String, val end: Int)
+private data class ProtectedInline(val signature: List<String>, val range: IntRange, val markupRange: IntRange = range)
 
 /** Preserves known documentation tags, operands and markup without comparing translated prose. */
 fun preservesCommentStructure(source: String, translation: String): Boolean =
     documentSignatures(source) == documentSignatures(translation) &&
-        inlineSignatures(source) == inlineSignatures(translation) &&
-        MARKUP_TAG.findAll(source).map { it.value }.toList() == MARKUP_TAG.findAll(translation).map { it.value }.toList()
+        sectionInlineSignatures(source) == sectionInlineSignatures(translation) &&
+        markupSignatures(source) == markupSignatures(translation)
 
 private fun documentSignatures(text: String): List<List<String>> = DOCUMENT_TAG.findAll(text).map { match ->
     val originalTag = match.groupValues[1]
@@ -30,7 +33,8 @@ private fun documentSignatures(text: String): List<List<String>> = DOCUMENT_TAG.
             rest = rest.substring(it.value.length).trimStart()
         }
     }
-    val type = if (tag in TYPE_EXPRESSION_TAGS && rest.startsWith('{')) delimitedToken(rest, 0, '{', '}') else null
+    // A JavaDoc inline tag begins prose; it is not a JSDoc/PHPDoc braced type expression.
+    val type = if (tag in TYPE_EXPRESSION_TAGS && rest.startsWith('{') && !rest.startsWith("{@")) delimitedToken(rest, 0, '{', '}') else null
     if (type != null) {
         signature += type.text
         rest = rest.substring(type.end).trimStart()
@@ -48,15 +52,42 @@ private fun documentSignatures(text: String): List<List<String>> = DOCUMENT_TAG.
         tag in REFERENCE_TAGS && type == null -> if (!Regex("^[\"'<]").containsMatchIn(rest) && !rest.startsWith("{@")) {
             atom(rest)?.let { signature += it.text }
         }
-        tag in RETURN_TYPE_TAGS && type == null -> atom(rest)?.let {
+        tag in RETURN_TYPE_TAGS && type == null && !rest.startsWith("{@") -> atom(rest)?.let {
             if (SIMPLE_TYPES.matches(it.text) || it.text.any { character -> character in "\\<>[]|" }) signature += it.text
         }
     }
     signature.toList()
 }.toList()
 
-private fun inlineSignatures(text: String): List<List<String>> {
-    val signatures = mutableListOf<List<String>>()
+private fun sectionInlineSignatures(text: String): List<List<Map<List<String>, Int>>> {
+    // Natural translation can reverse links/code within prose, but cannot transfer them to another parameter.
+    // Keep an explicit main-description section even when the first block tag starts at offset zero.
+    val boundaries = listOf(0) + DOCUMENT_TAG.findAll(text).map { it.range.first }.toList() + listOf(text.length)
+    return boundaries.zipWithNext { start, end ->
+        val section = text.substring(start, end)
+        val inline = protectedInline(section)
+        // XML parameters, HTML boundaries and blank-line paragraphs also own their references.
+        // Markup or blank lines inside a complete inline token move with that token; label HTML is checked separately.
+        val proseBoundaries = (markupMatches(section).map { it.range.first } + PARAGRAPH_BREAK.findAll(section).map { it.range.first })
+            .filter { boundary -> inline.none { boundary in it.range } }
+        val fragmentBoundaries = (listOf(0) + proseBoundaries + listOf(section.length)).sorted()
+        fragmentBoundaries.zipWithNext { fragmentStart, fragmentEnd ->
+            inline.filter { it.range.first >= fragmentStart && it.range.first < fragmentEnd }.groupingBy { it.signature }.eachCount()
+        }
+    }
+}
+
+private fun markupSignatures(text: String): List<String> = markupMatches(text).map { it.value }
+
+private fun markupMatches(text: String): List<MatchResult> {
+    // Generic types and literal HTML inside inline code/link targets are already protected by inline signatures.
+    // Link labels are translatable, so their markup must still be checked separately.
+    val inlineRanges = protectedInline(text).map { it.markupRange }
+    return MARKUP_TAG.findAll(text).filter { markup -> inlineRanges.none { markup.range.first in it } }.toList()
+}
+
+private fun protectedInline(text: String): List<ProtectedInline> {
+    val signatures = mutableListOf<ProtectedInline>()
     var position = 0
     while (position < text.length) {
         val match = INLINE_TAG.find(text, position) ?: break
@@ -66,16 +97,24 @@ private fun inlineSignatures(text: String): List<List<String>> {
         if (tag !in INLINE_TAGS) continue
         val token = delimitedToken(text, match.range.first, '{', '}', tag == "code")
         if (token == null) {
-            signatures += listOf("{@$originalTag", "unclosed", text.substring(position))
+            signatures += ProtectedInline(listOf("{@$originalTag", "unclosed", text.substring(position)), match.range.first until text.length)
             break
         }
-        val body = text.substring(position, token.end - 1).trim()
-        if (tag == "code" || tag == "literal") signatures += listOf("{@$originalTag", body, "}")
+        val bodyStart = (position until token.end - 1).firstOrNull { !text[it].isWhitespace() } ?: token.end - 1
+        val body = text.substring(bodyStart, token.end - 1).trimEnd()
+        val inline = if (tag == "code" || tag == "literal") {
+            ProtectedInline(listOf("{@$originalTag", body, "}"), match.range.first until token.end)
+        }
         else {
             val target = atom(body, true)
             val remainder = if (target != null) body.substring(target.end).trimStart() else ""
-            signatures += listOf("{@$originalTag", target?.text ?: "", if (remainder.startsWith('|')) "|" else "", "}")
+            ProtectedInline(
+                listOf("{@$originalTag", target?.text ?: "", if (remainder.startsWith('|')) "|" else "", "}"),
+                match.range.first until token.end,
+                bodyStart until (bodyStart + (target?.end ?: 0)),
+            )
         }
+        signatures += inline
         position = token.end
     }
     return signatures

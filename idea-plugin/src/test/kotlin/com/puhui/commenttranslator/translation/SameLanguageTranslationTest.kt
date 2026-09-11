@@ -93,14 +93,14 @@ class SameLanguageTranslationTest {
     /** A marker does not bypass the existing truncated-response or refusal checks. */
     @Test fun sameDoesNotAcceptTruncatedOrRefusedEnvelope() {
         val responses = listOf(
-            contentResponse("{\"same\":true}", finishReason = "length"),
-            contentResponse("{\"same\":true}", refusal = "Refused"),
+            "OUTPUT_TRUNCATED" to contentResponse("{\"same\":true}", finishReason = "length"),
+            "INVALID_RESPONSE" to contentResponse("{\"same\":true}", refusal = "Refused"),
         )
-        for (response in responses) TranslationClient(TranslationTransport { _, _, _, _, _ -> response }, 0).use { client ->
+        for ((expectedCode, response) in responses) TranslationClient(TranslationTransport { _, _, _, _, _ -> response }, 0).use { client ->
             val failure = assertThrows(TranslationException::class.java) {
                 client.translate(listOf(TranslationItem("already", "已经是中文。")), config, { false }, {})
             }
-            assertEquals("INVALID_RESPONSE", failure.code)
+            assertEquals(expectedCode, failure.code)
             assertTrue(failure.partialTranslations.isEmpty())
         }
     }
