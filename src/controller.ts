@@ -43,11 +43,12 @@ export interface FileSnapshot {
   error?: string;
 }
 
-/** Coordinates scanning, persistent cache lookup, batched translation and editor display. */
+/** Coordinates scanning, persistent cache lookup, concurrent translation and editor display. */
 export class TranslationController implements vscode.Disposable {
   private readonly states = new Map<string, FileState>();
   private readonly excluded = new Set<string>();
-  private readonly scheduler = new FileScheduler(3);
+  private readonly scheduler = new FileScheduler();
+  private readonly service: TranslationService;
   private readonly status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 80);
   private readonly disposables: vscode.Disposable[] = [];
   private automatic = false;
@@ -63,7 +64,7 @@ export class TranslationController implements vscode.Disposable {
     private readonly context: vscode.ExtensionContext,
     private readonly parser: CommentParser,
     private readonly cache: TranslationCache,
-    private readonly service = new TranslationService(),
+    service?: TranslationService,
     private readonly renderer = new TranslationRenderer(),
     private readonly reader = new TranslationReader({
       onReveal: (uri, line) => this.revealSource(uri, line),
@@ -72,6 +73,8 @@ export class TranslationController implements vscode.Disposable {
       onFocus: () => this.updateStatus(),
     }),
   ) {
+    this.service = service ?? new TranslationService(undefined, { scheduler: this.scheduler });
+    this.updateConcurrency();
     this.rememberSource(vscode.window.activeTextEditor?.document);
     this.status.command = 'commentTranslator.toggle';
     this.disposables.push(
@@ -99,6 +102,21 @@ export class TranslationController implements vscode.Disposable {
       vscode.window.onDidChangeTextEditorVisibleRanges(() => this.scheduleRender()),
       vscode.workspace.onDidChangeConfiguration((event) => {
         if (!event.affectsConfiguration(CONFIG_SECTION)) return;
+        // A pool-size change should not discard results or restart paid requests.
+        const otherSettings = ['automatic', 'baseUrl', 'model', 'apiKey', 'targetLanguage', 'prompt',
+          'responseFormat', 'temperature', 'thinking', 'maxBatchChars', 'maxOutputTokens',
+          'tokenLimitParameter', 'timeoutSeconds', 'debounceMs', 'visibleBufferLines',
+          'trailingPreviewLength', 'displayMode'];
+        if (event.affectsConfiguration(`${CONFIG_SECTION}.maxConcurrentRequests`) &&
+          !otherSettings.some((key) => event.affectsConfiguration(`${CONFIG_SECTION}.${key}`))) {
+          this.updateConcurrency();
+          return;
+        }
+        // Cancel old provider work before a larger pool can start more of its queued requests.
+        if (!this.suspended) {
+          for (const state of this.states.values()) if (state.phase !== 'demo') this.scheduleScan(state);
+        }
+        this.updateConcurrency();
         if (this.started && event.affectsConfiguration(`${CONFIG_SECTION}.automatic`)) {
           this.suspended = false;
           clearTimeout(this.configurationTimer);
@@ -106,7 +124,6 @@ export class TranslationController implements vscode.Disposable {
           return;
         }
         if (this.suspended) return;
-        for (const state of this.states.values()) if (state.phase !== 'demo') this.scheduleScan(state);
         clearTimeout(this.configurationTimer);
         if (this.started) this.configurationTimer = setTimeout(() => this.synchronizeAutomatic(), 600);
         this.updateStatus();
@@ -380,6 +397,11 @@ export class TranslationController implements vscode.Disposable {
     void this.enable(document, openReader);
   }
 
+  private updateConcurrency(): void {
+    const config = vscode.workspace.getConfiguration(CONFIG_SECTION);
+    this.scheduler.setMaxConcurrent(boundedNumber(config, 'maxConcurrentRequests', 10, 1, 64));
+  }
+
   private synchronizeAutomatic(): void {
     if (this.disposed || this.suspended) return;
     const enabled = vscode.workspace.isTrusted && vscode.workspace.getConfiguration(CONFIG_SECTION).get<boolean>('automatic', true);
@@ -482,7 +504,8 @@ export class TranslationController implements vscode.Disposable {
         const context = { text: block.text, languageId: state.mode === 'markdown' ? 'markdown-document' : document.languageId, baseUrl: normalizeEndpoint(config.baseUrl), model: config.model, targetLanguage: config.targetLanguage, promptVersion: state.mode === 'markdown' ? MARKDOWN_PROMPT_VERSION : PROMPT_VERSION, prompt: config.prompt };
         const key = cacheKey(context);
         let cached = this.cache.get(uri, key);
-        if (cached !== undefined && state.mode === 'markdown' && !preservesMarkdownStructure(block.text, cached)) cached = undefined;
+        if (cached !== undefined && !(state.mode === 'markdown'
+          ? preservesMarkdownStructure(block.text, cached) : preservesCommentStructure(block.text, cached))) cached = undefined;
         if (cached === undefined && state.mode !== 'markdown') {
           const legacy = this.cache.get(uri, cacheKey({ ...context, promptVersion: '1' }));
           if (legacy !== undefined && preservesCommentStructure(block.text, legacy)) {
@@ -513,23 +536,20 @@ export class TranslationController implements vscode.Disposable {
         state.phase = 'translating';
         this.reader.update(uri, this.readerModel(state));
         this.updateStatus();
-        await this.scheduler.schedule(uri, async (signal) => {
-          if (!current()) return;
-          await this.service.translate(
-            [...requests].map(([id, group]) => ({ id, text: group.blocks[0].text })), config, signal,
-            (translations) => {
-              if (!current()) return;
-              for (const [id, translation] of translations) {
-                const group = requests.get(id);
-                if (!group) continue;
-                this.cache.set(uri, group.key, translation, group.context);
-                for (const block of group.blocks) state.translations.set(block.id, translation);
-              }
-              this.render(state);
-              this.updateStatus();
-            },
-          );
-        }, abort.signal);
+        await this.service.translate(
+          [...requests].map(([id, group]) => ({ id, text: group.blocks[0].text })), config, abort.signal,
+          (translations) => {
+            if (!current()) return;
+            for (const [id, translation] of translations) {
+              const group = requests.get(id);
+              if (!group) continue;
+              this.cache.set(uri, group.key, translation, group.context);
+              for (const block of group.blocks) state.translations.set(block.id, translation);
+            }
+            this.render(state);
+            this.updateStatus();
+          }, uri,
+        );
       }
       if (!current()) return;
       await this.cache.flush();
@@ -573,7 +593,7 @@ export class TranslationController implements vscode.Disposable {
   }
 
   private usesReader(document: vscode.TextDocument): boolean {
-    return vscode.workspace.getConfiguration(CONFIG_SECTION, document.uri).get<string>('displayMode', 'reader') === 'reader';
+    return vscode.workspace.getConfiguration(CONFIG_SECTION, document.uri).get<string>('displayMode', 'inline') === 'reader';
   }
 
   private readerModel(state: FileState): ReaderModel {

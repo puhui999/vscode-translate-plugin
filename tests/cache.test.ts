@@ -90,6 +90,18 @@ describe('TranslationCache', () => {
     expect(reopened.size).toBe(1);
   });
 
+  it('persists the original for a same-language result and isolates other target languages', async () => {
+    const path = await databasePath();
+    const cache = await openCache({ databasePath: path });
+    const context = { ...KEY_INPUT, text: '@param value 已经是中文。', promptVersion: '2' };
+    const key = cacheKey(context);
+    cache.set('file:a', key, context.text, context);
+    await cache.close();
+    const reopened = await openCache({ databasePath: path });
+    expect(reopened.get('file:b', key)).toBe(context.text);
+    expect(reopened.get('file:b', cacheKey({ ...context, targetLanguage: 'en-US' }))).toBeUndefined();
+  });
+
   it('automatically persists pending translations after the debounce interval', async () => {
     const path = await databasePath();
     const cache = await openCache({ databasePath: path });

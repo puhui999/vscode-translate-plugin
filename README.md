@@ -1,14 +1,14 @@
 # 注释译读 · AI Comment Translator
 
-在 VS Code 中批量翻译代码注释。默认打开无边框的只读源码对照视图：独立注释、文档注释在下方显示多行译文，行尾注释在原注释后追加译文。原生源码编辑器在原注释位置逐行显示译文，悬停查看原文。译文不会写入源文件，不影响源码保存或 Git diff。
+在 VS Code 中自动翻译代码注释。默认在源码原注释位置逐行显示译文，悬停查看原文，光标或选区进入注释所在行时恢复原文以便编辑，离开后恢复译文。也可打开无边框的只读源码对照视图查看多行译文。每条逻辑注释一个请求，默认同时处理 10 条；先查 SQLite，只翻译未缓存的内容。译文不会写入源文件，不影响源码保存或 Git diff。
 
 版本导航：[VS Code（master-vscode）](https://github.com/puhui999/ai-comment-translator/blob/master-vscode/README.md) · [IntelliJ IDEA（master-idea）](https://github.com/puhui999/ai-comment-translator/blob/master-idea/idea-plugin/README.md)。
 
 ## 安装和体验
 
-1. 从 [GitHub Releases](https://github.com/puhui999/ai-comment-translator/releases/latest) 下载最新 `.vsix`；自行构建则运行 `npm ci` 和 `npm run package`。
+1. 从 [GitHub Releases](https://github.com/puhui999/ai-comment-translator/releases) 下载 VS Code 版本的 `.vsix`（IDEA 版本使用 ZIP）；自行构建当前分支则运行 `npm ci` 和 `npm run package`。本分支 `0.2.7` 为待发布版本。
 2. 在 VS Code 命令面板执行 **Extensions: Install from VSIX…**，选择 `artifacts/` 下的安装包。
-3. 执行 **注释译读：打开离线效果示例（无需 API）**，可直接看到无边框多行阅读视图；点击“返回源码”可体验原位译文。示例使用预置译文，不调用模型、不写入翻译缓存。
+3. 执行 **注释译读：打开离线效果示例（无需 API）**，默认在源码中体验原位译文；执行 **注释译读：打开无边框多行阅读视图** 可查看多行对照。示例遵循已保存的显示模式，使用预置译文，不调用模型、不写入翻译缓存。
 4. 执行 **注释译读：打开翻译设置**，填写服务地址、模型名和 API Key；也可使用 **配置模型服务** 向导。
 5. 打开 Java 等受支持的源码文件，即可自动扫描、查库并显示译文。配置完成时已经打开的文件也会自动处理，无需额外执行翻译命令。
 6. 对于 Markdown，在编辑器中或资源管理器的 `.md` 文件上右键，选择 **注释译读：翻译整个 Markdown 文件（只读）**。
@@ -17,48 +17,58 @@
 
 使用 **注释译读：开启 / 关闭自动翻译** 或设置页可关闭自动模式，取消当前窗口的排队及进行中请求，并清除译文显示。关闭后仍可通过 **开启 / 关闭当前文件翻译** 手动处理单个文件。自动模式下手动关闭某个文件，会暂停该文件，直到手动重新开启或关闭文件后重新打开。离线示例始终不调用模型。
 
-## 扫描、查库、批量翻译
+## 扫描、查库、并发翻译
 
 ```text
 开启翻译 / 访问文件 / 修改注释
-  → TextMate 扫描整个文件，提取注释
+  → TextMate 扫描整个文件，提取逻辑注释
   → 查询本地 SQLite
-      命中：立即显示已有译文
-      未命中：相同注释去重，组成带 ID 的列表
-  → 小文件一次请求，大文件按字符预算串行拆批
-  → 校验返回 ID，保存原文与译文
-  → 在对应注释位置显示译文
+      命中：立即复用已有结果
+      未命中：相同注释去重，每条注释一个请求
+  → 所有文件共享请求池，默认同时执行 10 个 HTTP 请求
+  → 逐条校验结果、保存缓存并立即显示
+      已是目标语言：恢复原文，不增加重复译文
+      需要翻译：在对应注释位置显示译文
 ```
 
-发送给模型的 user 消息示例：
+一条逻辑注释可以是完整的多行文档注释，或合并后的连续相邻行注释，不会按物理行拆成多个请求。每个源码翻译请求的 user 消息只含一个注释：
 
 ```json
 {
   "comments": [
-    { "id": "comment-a", "text": "Return the cached profile." },
-    { "id": "comment-b", "text": "Request timeout in milliseconds." }
+    { "id": "comment-a", "text": "Return the cached profile." }
   ]
 }
 ```
 
-要求模型返回：
+正常翻译沿用带 ID 的响应：
 
 ```json
 {
   "translations": [
-    { "id": "comment-b", "text": "请求超时时间，单位为毫秒。" },
     { "id": "comment-a", "text": "返回缓存的用户资料。" }
   ]
 }
 ```
 
-返回顺序可以不同，始终按 ID 对应。成功项先显示并缓存，缺失或重复项最多修复一次；无效或截断响应会有限拆批重试。失败内容不写入成功缓存。文件在请求期间修改、关闭或停用时，迟到结果不会重新出现。
+在默认 `json_object` 或兼容 `text` 模式下，模型先判断自然语言说明是否全部符合目标语言；如果是，只返回：
+
+```json
+{"same":true}
+```
+
+本地将短标识还原为该条原文并存入 SQLite，保留原始注释的符号、空白和缩进，不再增加重复译文。代码、标识符、URL 和文档标签不参与自然语言判断；仍有其他语言说明、简繁等目标变体不符或无法确定时，继续正常翻译。`same` 必须是独立对象中的布尔值 `true`，字符串、空值、重复字段或与译文混合的矛盾响应不作为成功结果。
+
+首次判断仍需要请求及输入 token，这个标识节省的是重复输出整段原文的输出 token；之后直接命中缓存。`json_schema` 模式为保持既有严格结构兼容，仍返回完整 `translations`，不使用短标识。Markdown 继续使用片段批次协议。
+
+返回内容按 ID 校验，成功项立即显示并缓存，无需等整个文件完成。缺失、重复或结构不完整的结果只为对应注释有限重试；失败内容不写入成功缓存。文件在请求期间修改、关闭或停用时，迟到结果不会重新出现。一个文件的注释也可用满并发名额，多个文件共享上限并轮流获得空闲名额。
 
 ## SQLite 缓存
 
 - 数据库位于 VS Code 为此扩展分配的 `globalStorageUri/translations.sqlite`，不存入项目仓库。
 - 保存规范化注释或 Markdown 片段原文、完整译文、语言、服务地址、模型、目标语言、Prompt 版本 / 哈希和时间信息；两种翻译模式的缓存分别标识。
-- 缓存键包含原文、代码语言、服务、模型、目标语言和 Prompt；相同条件下可跨文件、跨窗口重启复用。
+- 缓存键包含原文、代码语言、服务、模型、目标语言和 Prompt；相同条件下可跨文件、跨窗口重启复用。并发、输出格式、温度和思考模式不改变缓存身份，调整这些参数只影响后续新请求；需要重新生成已有译文时先清除缓存。
+- 同语短标识本地还原为原文后缓存，后续直接复用且不重复显示。协议版本沿用旧值，既有缓存通过结构校验后继续使用。
 - 关闭文件只释放编辑器资源和文件引用，保留数据库译文。
 - 默认不按时间过期，容量上限 10,000 条；到达上限后淘汰较少使用的条目。
 - 使用 SQLite WASM，避免不同操作系统与 Electron 原生模块 ABI 不匹配。数据库写入采用文件锁、合并和临时文件原子替换。
@@ -68,6 +78,10 @@
 数据库包含待翻译原文和译文，属于本机文件；不会上传到插件服务器，也不包含 API Key。默认不随 Settings Sync 同步数据库。
 
 ## 显示规则
+
+新安装默认使用 `inline` 原位译文，已明确保存的显示设置保持不变。源码视图在原注释位置显示译文，悬停查看原文；光标或选区进入注释所在行后恢复原文，离开后恢复译文。需要自由多行排版时，可执行 **打开无边框多行阅读视图**，或将 `displayMode` 设为 `reader`。
+
+只读阅读视图的对照排版如下：
 
 | 注释 | 显示方式 |
 | --- | --- |
@@ -96,9 +110,11 @@ VS Code 的稳定扩展 API 不提供可插入原生源码编辑器的多行虚�
 
 译文和源码均作为安全纯文字显示，不会执行模型返回的命令链接、HTML 或加载远程图片。关闭翻译后清除两处译文；已打开的阅读视图保留源码，方便返回编辑。
 
-如希望始终留在原生编辑器，将 `displayMode` 改为 `inline`：译文显示在原注释位置，保留 `//`、`/** */`、文档标签和缩进，悬停查看原文。光标或选择范围进入注释所在行时，整个注释块临时恢复原文；移开光标后恢复译文。行内注释前后的代码保持可见。
+默认的 `inline` 模式始终留在原生编辑器：译文显示在原注释位置，保留 `//`、`/** */`、文档标签和缩进，悬停查看原文。光标或选择范围进入注释所在行时，整个注释块临时恢复原文；移开光标后恢复译文。行内注释前后的代码保持可见。
 
 这属于视觉替换，保存、复制、搜索和源码坐标始终使用原文。译文适配原注释已有的物理行数，长行可横向滚动查看；源码编辑器的自动换行仍基于原文，需要按译文宽度自由换行时使用只读阅读视图。嵌套块注释等无法可靠保留内部格式的特殊注释继续显示原文。原位替换利用当前 VS Code Decoration 的 CSS 显示行为，隐藏原文不是稳定 API 的独立能力，已在真实 VS Code 1.85.2 验证。原生装饰仅覆盖视口上下 10 行；滚动不会发起翻译请求。
+
+编辑器右键的翻译开关、阅读视图以及 Markdown 翻译入口已提高到 `navigation@1` / `navigation@2` 优先级，资源管理器的 Markdown 翻译入口同样前移；最终位置由 VS Code 与其他扩展共同排序，无法保证固定在前五项。
 
 ## 语言范围
 
@@ -114,7 +130,7 @@ HTML、XML 和 Vue 模板支持 `<!-- ... -->` 注释；HTML/Vue 的 script、st
 
 - 翻译标题、段落、列表、引用及表格中的自然语言，按 Markdown 排版显示；顶部可切换原文/译文、重新翻译和返回源码。
 - 保留 Markdown 格式、代码块、行内代码、链接目标、图片地址、引用定义、原始 HTML 和 YAML/TOML 元数据。完整代码或元数据块无需请求；快捷引用链接的标识保留原文。
-- 全文先查 SQLite；相同段落去重，未命中片段合并请求，长文按完整块串行拆批。手动全文翻译不受 500 条自动注释上限影响，仍共用最多 3 个文件并发的队列。
+- 全文先查 SQLite；相同段落去重，未命中片段合并请求，长文按完整块串行拆批。手动全文翻译不受 500 条自动注释上限影响；Markdown 请求与源码注释共用 `maxConcurrentRequests` 的全局 HTTP 并发额度。
 - 结构校验拒绝丢失标题、列表、表格、代码或链接目标的结果。成功片段先显示并缓存，未完成部分暂时保留原文；重试复用已成功缓存。
 - 打开 Markdown 本身不会发送请求。已翻译文件修改或服务设置改变后，旧译文会撤下，并提示手动重新翻译；未改变的段落仍可命中缓存。
 - 单个完整段落、列表或表格超过 `maxBatchChars` 时会提示其行号，请根据模型容量提高上限；插件不会截断内容。阅读视图不执行原始 HTML，链接显示标签和地址提示，图片显示替代文字与地址，不加载远程资源。
@@ -132,7 +148,11 @@ HTML、XML 和 Vue 模板支持 `<!-- ... -->` 注释；HTML/Vue 的 script、st
   "commentTranslator.automatic": true,
   "commentTranslator.baseUrl": "https://your-provider.example/v1",
   "commentTranslator.model": "your-model-id",
-  "commentTranslator.apiKey": "YOUR_API_KEY"
+  "commentTranslator.apiKey": "YOUR_API_KEY",
+  "commentTranslator.maxConcurrentRequests": 10,
+  "commentTranslator.responseFormat": "json_object",
+  "commentTranslator.temperature": 0.2,
+  "commentTranslator.thinking": "provider"
 }
 ```
 
@@ -142,11 +162,14 @@ HTML、XML 和 Vue 模板支持 `<!-- ... -->` 注释；HTML/Vue 的 script、st
 | `baseUrl` | 空 | 服务地址，需配置 |
 | `model` | 空 | 服务支持的模型名称，需配置 |
 | `apiKey` | 空 | 用户设置中的 Key，非空时优先；为空时使用对应服务的加密存储 |
-| `displayMode` | `reader` | 默认无边框多行阅读视图；`inline` 在源码原注释位置显示译文，悬停看原文 |
+| `displayMode` | `inline` | 默认在源码原注释位置显示译文，悬停看原文；`reader` 使用无边框多行阅读视图 |
 | `targetLanguage` | 简体中文 | 目标语言 |
 | `prompt` | 空 | 附加术语和翻译要求 |
-| `responseFormat` | `text` | 通用模式；也可选择服务支持的 `json_object` 或 `json_schema` |
-| `maxBatchChars` | 16000 | 每批 JSON 注释或 Markdown 片段的字符预算，并非 token 数 |
+| `responseFormat` | `json_object` | 默认发送 JSON Object 参数；`text` 省略该参数，`json_schema` 沿用严格的完整译文结构 |
+| `maxConcurrentRequests` | 10 | 当前 VS Code 扩展窗口共享的 HTTP 请求上限，1–64；多文件及 Markdown 共用额度 |
+| `temperature` | 0.2 | 模型温度，0–2，支持小数；是否生效由服务、模型和思考模式决定 |
+| `thinking` | `provider` | 保留服务默认行为；可设 `enabled` 或 `disabled`，需要服务支持此扩展参数 |
+| `maxBatchChars` | 16000 | 单条注释或每批 Markdown 片段的 JSON 字符预算，含数据开销，并非 token 数 |
 | `maxOutputTokens` | 8192 | 输出 token 上限，需符合所选模型限制 |
 | `tokenLimitParameter` | `max_tokens` | 可改用 `max_completion_tokens`，或选择 `omit` 不发送 token 上限 |
 | `timeoutSeconds` | 60 | 单次请求超时 |
@@ -154,11 +177,13 @@ HTML、XML 和 Vue 模板支持 `<!-- ... -->` 注释；HTML/Vue 的 script、st
 | `visibleBufferLines` | 10 | 视口外额外显示行数 |
 | `trailingPreviewLength` | 80 | 已停用的旧版预览长度；原位译文不再截断 |
 
-配置前缀均为 `commentTranslator.`。JSON Schema 支持因服务和模型而异，默认通用模式通过提示词要求 JSON 并本地校验，不强制兼容服务支持结构化输出参数。
+配置前缀均为 `commentTranslator.`。JSON Object / JSON Schema 支持因服务和模型而异；服务不支持 `response_format` 时，选择 `text` 省略该参数。兼容文本模式仍通过提示词要求 JSON 并本地校验，不接受任意纯文本译文。
 
-接口使用 `POST /chat/completions`、`messages`、`model` 和可选的 `Authorization: Bearer`，读取 `choices[0].message.content`。仅提供 Responses、原生厂商协议或自定义认证方式的服务需要兼容代理；“OpenAI 兼容”不表示所有厂商的可选参数完全相同。默认不发送温度等额外采样参数；如服务对 token 参数名称有要求，可调整 `tokenLimitParameter`。
+接口使用 `POST /chat/completions`、`messages`、`model` 和可选的 `Authorization: Bearer`，读取 `choices[0].message.content`。仅提供 Responses、原生厂商协议或自定义认证方式的服务需要兼容代理；“OpenAI 兼容”不表示所有厂商的可选参数完全相同。默认发送 `temperature: 0.2` 和 `response_format: {"type":"json_object"}`；如服务对 token 参数名称有要求，可调整 `tokenLimitParameter`。
 
-每个文件开启期间默认自动批准最多 500 条不同的未缓存注释。达到上限后执行 **继续翻译下一批 500 条注释**。已缓存内容不消耗本次额度。单文件请求串行，全局最多 3 个文件同时请求；限流、网络错误和超时最多重试两次，认证失败直接提示。
+思考模式默认 `provider`，不发送 `thinking` 参数，由服务决定行为。选择 `enabled` 或 `disabled` 时发送 `thinking: {"type":"enabled"}` 或 `thinking: {"type":"disabled"}`，需要服务支持该扩展参数；并非所有兼容接口都支持。温度支持小数，部分模型在思考模式下可能不使用温度参数。
+
+每个文件开启期间默认自动批准最多 500 条不同的未缓存注释。达到上限后执行 **继续翻译下一批 500 条注释**。已缓存内容不消耗本次额度。每条未缓存的逻辑注释单独请求，当前 VS Code 扩展窗口最多同时发送 `maxConcurrentRequests` 个 HTTP 请求，默认 10，可设 1–64。多个文件以及 Markdown 请求共享额度，各 VS Code 窗口独立计数。仅修改并发上限时不会重启已有请求或清空结果；提高上限会立即补充排队请求，降低上限会让已有请求完成后再按新上限补充。限流、网络错误和超时最多重试两次，认证失败直接提示。
 
 单个注释本身大于字符预算时会给出提示，需要按模型容量调整 `maxBatchChars`。插件不会为了满足预算修改或截断源注释。
 
@@ -186,8 +211,8 @@ npm run package
 
 - `src/parser/`：注释范围、跨行语法状态与展示分类。
 - `src/core/cache.ts`：SQLite 原文译文表与持久化。
-- `src/core/scheduler.ts`：文件串行队列、全局并发及取消。
-- `src/translation/`：兼容接口、批次拆分、ID 校验与重试。
+- `src/core/scheduler.ts`：共享 HTTP 并发限制、跨文件调度及取消。
+- `src/translation/`：兼容接口、单条注释请求、Markdown 分批、同语短响应、ID 校验与重试。
 - `src/controller.ts`：启停、查库、请求和文件变更的一致性。
 - `src/renderer.ts`：源码注释的逐行视觉替换、原文悬浮与编辑保护。
 - `src/commentFormat.ts`：按原注释恢复译文的注释符号和缩进。

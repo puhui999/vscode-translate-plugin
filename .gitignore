@@ -10,3 +10,8 @@ artifacts/
 !.env.example
 *.sqlite
 *.sqlite-*
+idea-plugin/.gradle/
+idea-plugin/.intellijPlatform/
+idea-plugin/.kotlin/
+idea-plugin/build/
+idea-plugin/local.properties

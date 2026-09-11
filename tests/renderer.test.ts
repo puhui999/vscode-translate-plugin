@@ -89,6 +89,17 @@ describe('TranslationRenderer integration', () => {
     expect(renderer.widgetCount(document.uri.toString())).toBe(0);
   });
 
+  it('leaves already-target-language comments native without replacements or duplicate hovers', () => {
+    const { document, editor, block } = setup('// 已经是中文。');
+    block.text = '已经是中文。';
+    renderer = new TranslationRenderer();
+    renderer.render(document as unknown as vscode.TextDocument, [block], new Map([['a', block.text]]), 10);
+    expect(decorations(editor, 'hidden')).toEqual([]);
+    expect(decorations(editor, 'replacement')).toEqual([]);
+    expect(decorations(editor, 'hover')).toEqual([]);
+    expect(document.getText()).toBe('// 已经是中文。');
+  });
+
   it('replaces rather than accumulates painted rows on repeated renders', () => {
     const { document, editor, block } = setup();
     renderer = new TranslationRenderer();

@@ -85,7 +85,7 @@ export class TranslationRenderer implements vscode.Disposable {
       const hoverBlocks = new Map<number, Set<CommentBlock>>();
       for (const block of blocks) {
         const translation = translations.get(block.id);
-        if (!translation || !editor.visibleRanges.some((range) => block.end.line >= range.start.line - bufferLines && block.start.line <= range.end.line + bufferLines)) continue;
+        if (!translation || translation === block.text || !editor.visibleRanges.some((range) => block.end.line >= range.start.line - bufferLines && block.start.line <= range.end.line + bufferLines)) continue;
         const range = new vscode.Range(block.start.line, block.start.character, block.end.line, block.end.character);
         if (document.getText(range) !== block.rawText) continue;
         const rows = formatSourceTranslation(block, translation);

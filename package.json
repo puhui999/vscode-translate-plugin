@@ -1,8 +1,8 @@
 {
   "name": "vscode-translate-plugin",
   "displayName": "注释译读 · AI Comment Translator",
-  "description": "SQLite 缓存与批量 AI 注释翻译：无边框多行阅读视图、源码注释原位译文，自定义 OpenAI 兼容服务。",
-  "version": "0.2.6",
+  "description": "SQLite 缓存与并发 AI 注释翻译：源码注释原位译文、无边框多行阅读视图，自定义 OpenAI 兼容服务。",
+  "version": "0.2.7",
   "publisher": "local-dev",
   "license": "MIT",
   "engines": {
@@ -84,24 +84,24 @@
       "editor/context": [
         {
           "command": "commentTranslator.toggle",
-          "group": "navigation@20",
+          "group": "navigation@1",
           "when": "editorTextFocus && !isInDiffEditor && editorLangId != markdown"
         },
         {
           "command": "commentTranslator.openReader",
-          "group": "navigation@21",
+          "group": "navigation@2",
           "when": "editorTextFocus && !isInDiffEditor && editorLangId != markdown"
         },
         {
           "command": "commentTranslator.translateMarkdown",
-          "group": "navigation@20",
+          "group": "navigation@1",
           "when": "editorTextFocus && editorLangId == markdown && !isInDiffEditor && isWorkspaceTrusted"
         }
       ],
       "explorer/context": [
         {
           "command": "commentTranslator.translateMarkdown",
-          "group": "navigation@20",
+          "group": "navigation@1",
           "when": "!explorerResourceIsFolder && resourceExtname =~ /\\.(md|markdown|mdown)$/i && isWorkspaceTrusted"
         }
       ],
@@ -159,20 +159,52 @@
             "json_object",
             "json_schema"
           ],
-          "default": "text",
+          "default": "json_object",
           "scope": "machine",
           "enumDescriptions": [
-            "通用兼容模式：通过提示词要求 JSON，本地校验结果。",
-            "JSON 模式：服务必须支持 response_format。",
-            "严格结构化模式：服务及模型必须支持 JSON Schema。"
+            "兼容文本模式：省略 response_format，通过提示词要求 JSON，本地校验结果；支持同语短标识。",
+            "JSON Object 模式（默认）：服务必须支持 response_format；支持同语短标识。",
+            "严格结构化模式：服务及模型必须支持 JSON Schema；沿用完整 translations 结构，不使用同语短标识。"
           ]
+        },
+        "commentTranslator.maxConcurrentRequests": {
+          "type": "integer",
+          "default": 10,
+          "minimum": 1,
+          "maximum": 64,
+          "scope": "machine",
+          "description": "当前 VS Code 扩展窗口共享的 HTTP 请求并发上限。源码每条逻辑注释一个请求，Markdown 分片请求共用此上限；多文件不分别增加额度。"
+        },
+        "commentTranslator.temperature": {
+          "type": "number",
+          "default": 0.2,
+          "minimum": 0,
+          "maximum": 2,
+          "scope": "machine",
+          "description": "模型温度，保留小数并发送 temperature 参数；是否生效取决于服务、模型及思考模式。修改后仅影响新请求，已有缓存继续复用。"
+        },
+        "commentTranslator.thinking": {
+          "type": "string",
+          "enum": [
+            "provider",
+            "disabled",
+            "enabled"
+          ],
+          "default": "provider",
+          "scope": "machine",
+          "enumDescriptions": [
+            "保留服务默认行为，不发送 thinking 参数。",
+            "发送 thinking: {\"type\":\"disabled\"}，需要服务支持该扩展参数。",
+            "发送 thinking: {\"type\":\"enabled\"}，需要服务支持该扩展参数。"
+          ],
+          "description": "思考模式。默认由服务决定；显式开启或关闭要求服务支持 thinking 扩展参数。修改后仅影响新请求，已有缓存继续复用。"
         },
         "commentTranslator.maxBatchChars": {
           "type": "number",
           "default": 16000,
           "minimum": 1000,
           "maximum": 200000,
-          "description": "每个请求的注释或 Markdown 片段字符预算。小文件合并请求，大文件按完整块拆批；这不是模型 token 数。",
+          "description": "单条注释或每批 Markdown 片段的 JSON 字符预算（含数据开销），不等同于 token 数。源码每条逻辑注释一个请求，Markdown 按完整块拆批。",
           "scope": "resource"
         },
         "commentTranslator.maxOutputTokens": {
@@ -180,7 +212,7 @@
           "default": 8192,
           "minimum": 512,
           "maximum": 65536,
-          "description": "每批输出 token 上限，须符合服务和模型限制；tokenLimitParameter 为 omit 时不发送此上限。",
+          "description": "每个请求的输出 token 上限，须符合服务和模型限制；tokenLimitParameter 为 omit 时不发送此上限。",
           "scope": "resource"
         },
         "commentTranslator.tokenLimitParameter": {
@@ -219,7 +251,7 @@
           "default": 10,
           "minimum": 0,
           "maximum": 100,
-          "description": "可见区域上下额外显示译文的行数。翻译按整个文件批量进行，此设置仅控制显示范围。",
+          "description": "可见区域上下额外显示译文的行数。翻译先扫描整个文件，此设置仅控制显示范围，滚动不发起翻译请求。",
           "scope": "resource"
         },
         "commentTranslator.trailingPreviewLength": {
@@ -237,13 +269,13 @@
             "reader",
             "inline"
           ],
-          "default": "reader",
+          "default": "inline",
           "scope": "resource",
           "enumDescriptions": [
             "开启当前文件翻译时打开独立只读阅读视图，显示无边框多行译文；点击行号返回源码。",
             "留在原生编辑器，在原注释位置逐行显示译文，悬停查看原文；光标进入注释所在行时恢复原文以便编辑。"
           ],
-          "description": "译文显示方式。阅读视图自由排版；源码视图在已有注释行中显示译文，不改变源文件、行号和保存内容。"
+          "description": "译文显示方式，默认原位译文。源码视图在已有注释行中显示译文；阅读视图自由排版。不改变源文件、行号和保存内容。"
         }
       }
     }

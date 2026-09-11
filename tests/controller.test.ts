@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as vscode from 'vscode';
 import { TranslationController } from '../src/controller';
+import { FileScheduler } from '../src/core/scheduler';
 import { cacheKey, type TranslationCache } from '../src/core/cache';
 import { type CommentBlock, type CommentParser } from '../src/parser/commentParser';
 import { type TranslationRenderer } from '../src/renderer';
@@ -26,7 +27,7 @@ function changeSetting(key: string, value: unknown): void {
   events.configuration.fire({ affectsConfiguration: (section: string) => section === 'commentTranslator' || section === `commentTranslator.${key}` } as vscode.ConfigurationChangeEvent);
 }
 
-type Translate = (items: readonly TranslationItem[], config: TranslationConfig, signal: AbortSignal, onBatch?: (translations: Map<string, string>) => void) => Promise<Map<string, string>>;
+type Translate = (items: readonly TranslationItem[], config: TranslationConfig, signal: AbortSignal, onBatch?: (translations: Map<string, string>) => void, fileUri?: string) => Promise<Map<string, string>>;
 
 function fixture(blocks: CommentBlock[] = [block('a', 'First comment')], document = createDocument()) {
   const persistent = new Map<string, string>();
@@ -97,7 +98,7 @@ function lateService(mock: ReturnType<typeof fixture>['service']) {
 
 describe('TranslationController integration', () => {
   let controller: TranslationController | undefined;
-  beforeEach(() => { vi.useFakeTimers(); resetVscodeMock(); });
+  beforeEach(() => { vi.useFakeTimers(); resetVscodeMock(); settings.set('displayMode', 'reader'); });
   afterEach(() => { controller?.dispose(); controller = undefined; vi.useRealTimers(); });
 
   function markdownFixture(source = '# Hello\n\nHello world.\n\n```js\nconst value = 1;\n```\n') {
@@ -240,6 +241,60 @@ describe('TranslationController integration', () => {
     expect(controller.getSnapshot(setup.document.uri.toString()).enabled).toBe(false);
     await controller.toggle();
     expect(setup.service.translate).toHaveBeenCalledTimes(1);
+  });
+
+  it('automatically translates in place by default without opening the reader', async () => {
+    settings.delete('displayMode');
+    const setup = fixture();
+    controller = setup.controller;
+    controller.start();
+    await settle();
+    expect(setup.service.translate).toHaveBeenCalledTimes(1);
+    expect(setup.service.translate.mock.calls[0][4]).toBe(setup.document.uri.toString());
+    expect(setup.renderer.render).toHaveBeenCalled();
+    expect(setup.reader.open).not.toHaveBeenCalled();
+    expect(controller.getSnapshot(setup.document.uri.toString()).phase).toBe('ready');
+  });
+
+  it('applies a concurrency change without cancelling or re-requesting active comments', async () => {
+    const setup = fixture();
+    controller = setup.controller;
+    const late = lateService(setup.service);
+    controller.start();
+    await settle();
+    const signal = setup.service.translate.mock.calls[0][2];
+    changeSetting('maxConcurrentRequests', 4);
+    await vi.advanceTimersByTimeAsync(1200);
+    expect(signal.aborted).toBe(false);
+    expect(setup.service.translate).toHaveBeenCalledTimes(1);
+    late.complete();
+    await settle();
+    expect(controller.getSnapshot(setup.document.uri.toString()).phase).toBe('ready');
+  });
+
+  it('cancels old provider work before applying a simultaneous pool-size change', async () => {
+    const setup = fixture();
+    controller = setup.controller;
+    const late = lateService(setup.service);
+    controller.start();
+    await settle();
+    const signal = setup.service.translate.mock.calls[0][2];
+    const original = FileScheduler.prototype.setMaxConcurrent;
+    const update = vi.spyOn(FileScheduler.prototype, 'setMaxConcurrent').mockImplementation(function (this: FileScheduler, limit) {
+      expect(signal.aborted).toBe(true);
+      original.call(this, limit);
+    });
+    try {
+      settings.set('model', 'new-model');
+      settings.set('maxConcurrentRequests', 20);
+      events.configuration.fire({ affectsConfiguration: (section: string) =>
+        ['commentTranslator', 'commentTranslator.model', 'commentTranslator.maxConcurrentRequests'].includes(section),
+      } as vscode.ConfigurationChangeEvent);
+      expect(update).toHaveBeenCalledWith(20);
+      late.complete();
+      await settle();
+      expect(setup.cache.set).not.toHaveBeenCalled();
+    } finally { update.mockRestore(); }
   });
 
   it('automatically translates an already visible Java file once after activation', async () => {
@@ -448,6 +503,33 @@ describe('TranslationController integration', () => {
     expect(setup.service.translate.mock.calls[0]![0]).toEqual([{ id: 'a', text: 'Repeated' }]);
     expect(setup.cache.set).toHaveBeenCalledTimes(1);
     expect(setup.rendered.at(-1)).toEqual(new Map([['a', '译文 a'], ['b', '译文 a']]));
+  });
+
+  it('caches already-target-language originals and reuses them after reopening', async () => {
+    const source = '已经是中文。';
+    const setup = fixture([block('same', source)]);
+    controller = setup.controller;
+    setup.service.translate.mockImplementation(async (items, _config, _signal, onBatch) => {
+      const result = new Map(items.map(({ id, text }) => [id, text]));
+      onBatch?.(result);
+      return result;
+    });
+    await controller.toggle();
+    expect(setup.cache.set).toHaveBeenCalledWith(setup.document.uri.toString(), translationKey(source), source, expect.anything());
+    await controller.toggle();
+    await controller.toggle();
+    expect(setup.service.translate).toHaveBeenCalledTimes(1);
+    expect(controller.getSnapshot(setup.document.uri.toString())).toMatchObject({ translated: 1, cacheHits: 1 });
+  });
+
+  it('revalidates current cache documentation structure before displaying a translation', async () => {
+    const source = '@param value The value.';
+    const setup = fixture([block('doc', source)]);
+    controller = setup.controller;
+    setup.persistent.set(translationKey(source), '@param other 错误的参数。');
+    await controller.toggle();
+    expect(setup.service.translate).toHaveBeenCalledTimes(1);
+    expect(controller.getSnapshot(setup.document.uri.toString()).cacheHits).toBe(0);
   });
 
   it('reuses and upgrades a legacy cached translation whose documentation tags remain intact', async () => {

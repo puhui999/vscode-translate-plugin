@@ -9,7 +9,8 @@ interface ScheduledTask {
   abortListener?: () => void;
 }
 
-const DEFAULT_MAX_CONCURRENT = 3;
+const DEFAULT_MAX_CONCURRENT = 10;
+const MAX_CONCURRENT_LIMIT = 64;
 
 function abortError(message = 'Translation request cancelled.'): Error {
   const error = new Error(message);
@@ -17,17 +18,25 @@ function abortError(message = 'Translation request cancelled.'): Error {
   return error;
 }
 
-/** Serializes each file's requests while bounding active work across all files. */
+/** Shares request concurrency across all files and rotates waiting files fairly. */
 export class FileScheduler {
   private readonly queues = new Map<string, ScheduledTask[]>();
-  private readonly active = new Map<string, ScheduledTask>();
+  private readonly active = new Set<ScheduledTask>();
+  private maxConcurrent: number;
   private disposed = false;
+  private draining = false;
 
-  /** Creates a scheduler with the specified positive global concurrency limit. */
-  public constructor(private readonly maxConcurrent: number = DEFAULT_MAX_CONCURRENT) {
-    if (!Number.isInteger(maxConcurrent) || maxConcurrent <= 0) {
-      throw new RangeError('Maximum concurrency must be a positive integer.');
-    }
+  /** Creates a scheduler with a global request concurrency limit from 1 to 64. */
+  public constructor(maxConcurrent: number = DEFAULT_MAX_CONCURRENT) {
+    this.validateMaxConcurrent(maxConcurrent);
+    this.maxConcurrent = maxConcurrent;
+  }
+
+  /** Updates the limit immediately while allowing excess running requests to finish. */
+  public setMaxConcurrent(maxConcurrent: number): void {
+    this.validateMaxConcurrent(maxConcurrent);
+    this.maxConcurrent = maxConcurrent;
+    this.drain();
   }
 
   /** Queues work; cancellation rejects promptly but retains its slot until running work exits. */
@@ -66,18 +75,16 @@ export class FileScheduler {
     return promise;
   }
 
-  /** Rejects this file's queued tasks and signals any running task to stop. */
+  /** Rejects this file's queued tasks and signals all its running requests to stop. */
   public cancel(fileUri: string): void {
-    const queue = this.queues.get(fileUri);
+    const tasks = [
+      ...(this.queues.get(fileUri) ?? []),
+      ...[...this.active].filter((task) => task.fileUri === fileUri)
+    ];
     this.queues.delete(fileUri);
-    for (const task of queue ?? []) {
+    for (const task of tasks) {
       this.rejectTask(task, abortError());
       task.controller.abort();
-    }
-    const runningTask = this.active.get(fileUri);
-    if (runningTask) {
-      this.rejectTask(runningTask, abortError());
-      runningTask.controller.abort();
     }
     this.drain();
   }
@@ -85,8 +92,17 @@ export class FileScheduler {
   /** Cancels outstanding work and permanently rejects new scheduling attempts. */
   public dispose(): void {
     this.disposed = true;
-    for (const fileUri of new Set([...this.queues.keys(), ...this.active.keys()])) {
+    for (const fileUri of new Set([
+      ...this.queues.keys(),
+      ...[...this.active].map((task) => task.fileUri)
+    ])) {
       this.cancel(fileUri);
+    }
+  }
+
+  private validateMaxConcurrent(maxConcurrent: number): void {
+    if (!Number.isInteger(maxConcurrent) || maxConcurrent < 1 || maxConcurrent > MAX_CONCURRENT_LIMIT) {
+      throw new RangeError('Maximum concurrency must be an integer from 1 to 64.');
     }
   }
 
@@ -108,25 +124,30 @@ export class FileScheduler {
   }
 
   private drain(): void {
-    while (!this.disposed && this.active.size < this.maxConcurrent) {
-      let nextTask: ScheduledTask | undefined;
-      for (const [fileUri, queue] of this.queues) {
-        if (this.active.has(fileUri)) {
-          continue;
+    if (this.draining) {
+      return;
+    }
+    this.draining = true;
+    try {
+      while (!this.disposed && this.active.size < this.maxConcurrent) {
+        let nextTask: ScheduledTask | undefined;
+        for (const [fileUri, queue] of this.queues) {
+          nextTask = queue.shift();
+          this.queues.delete(fileUri);
+          if (queue.length > 0) {
+            // Rotate a serviced file to the back so other files are not starved.
+            this.queues.set(fileUri, queue);
+          }
+          break;
         }
-        nextTask = queue.shift();
-        this.queues.delete(fileUri);
-        if (queue.length > 0) {
-          // Rotate a serviced file to the back so other files are not starved.
-          this.queues.set(fileUri, queue);
+        if (!nextTask) {
+          return;
         }
-        break;
+        this.active.add(nextTask);
+        void this.executeTask(nextTask);
       }
-      if (!nextTask) {
-        return;
-      }
-      this.active.set(nextTask.fileUri, nextTask);
-      void this.executeTask(nextTask);
+    } finally {
+      this.draining = false;
     }
   }
 
@@ -142,7 +163,7 @@ export class FileScheduler {
       this.rejectTask(task, error);
     } finally {
       this.removeAbortListener(task);
-      this.active.delete(task.fileUri);
+      this.active.delete(task);
       this.drain();
     }
   }

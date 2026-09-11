@@ -78,7 +78,7 @@ function makeRows(model: ReaderModel): SourceRow[] {
       if (to > from) rows[line].comments.push({ start: from, end: to });
     }
     const text = model.translations.get(block.id);
-    if (!text?.trim()) continue;
+    if (!text?.trim() || text === block.text) continue;
     // An exclusive endpoint at column zero belongs to the previous visual row.
     const lastLine = end.character === 0 && end.line > start.line ? end.line - 1 : end.line;
     const translation: Translation = {

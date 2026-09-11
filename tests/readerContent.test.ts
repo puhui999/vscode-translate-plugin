@@ -77,6 +77,17 @@ describe('read-only reader content', () => {
     expect(content.indexOf('class="translation-row"')).toBeLessThan(content.indexOf('class="source-row" data-line="2"'));
   });
 
+  it('counts an already-target-language result without adding a duplicate translation row', () => {
+    const source = '// 已经是中文。';
+    const comment = block('same', 'standalone', 0, 0, 0, source.length, source);
+    comment.text = '已经是中文。';
+    const html = renderReaderHtml(model({ source, blocks: [comment],
+      translations: new Map([['same', comment.text]]), total: 1, translated: 1 }), NONCE);
+    expect(main(html)).toContain('<span class="source-comment">// 已经是中文。</span>');
+    expect(main(html)).not.toContain('data-translation-id');
+    expect(html).toContain('翻译完成 · 1/1');
+  });
+
   it('leaves untranslated comments highlighted and excludes missing, empty and stale translations', () => {
     const html = renderReaderHtml(model({
       source: '// one\n// two',

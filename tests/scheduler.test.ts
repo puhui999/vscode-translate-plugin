@@ -18,14 +18,14 @@ function deferred<T>(): Deferred<T> {
 }
 
 describe('FileScheduler', () => {
-  it('runs at most three files concurrently by default', async () => {
+  it('runs at most ten requests concurrently by default across and within files', async () => {
     const scheduler = new FileScheduler();
-    const gates = Array.from({ length: 5 }, () => deferred<number>());
+    const gates = Array.from({ length: 12 }, () => deferred<number>());
     const started: number[] = [];
     let active = 0;
     let maximumActive = 0;
     const promises = gates.map((gate, index) =>
-      scheduler.schedule(`file:${index}`, async () => {
+      scheduler.schedule(`file:${index % 2}`, async () => {
         started.push(index);
         active += 1;
         maximumActive = Math.max(maximumActive, active);
@@ -36,19 +36,19 @@ describe('FileScheduler', () => {
         }
       })
     );
-    expect(started).toEqual([0, 1, 2]);
+    expect(started).toEqual(Array.from({ length: 10 }, (_, index) => index));
     gates[0]!.resolve(0);
     await promises[0];
-    expect(started).toEqual([0, 1, 2, 3]);
+    expect(started).toEqual(Array.from({ length: 11 }, (_, index) => index));
     gates[1]!.resolve(1);
     await promises[1];
-    expect(started).toEqual([0, 1, 2, 3, 4]);
+    expect(started).toEqual(Array.from({ length: 12 }, (_, index) => index));
     gates.slice(2).forEach((gate, index) => gate.resolve(index + 2));
-    expect(await Promise.all(promises)).toEqual([0, 1, 2, 3, 4]);
-    expect(maximumActive).toBe(3);
+    expect(await Promise.all(promises)).toEqual(Array.from({ length: 12 }, (_, index) => index));
+    expect(maximumActive).toBe(10);
   });
 
-  it('preserves file order while allowing another file to run independently', async () => {
+  it('starts consecutive requests from the same file without waiting for earlier responses', async () => {
     const scheduler = new FileScheduler(3);
     const firstGate = deferred<string>();
     const secondGate = deferred<string>();
@@ -66,13 +66,62 @@ describe('FileScheduler', () => {
       started.push('b:1');
       return otherGate.promise;
     });
-    expect(started).toEqual(['a:1', 'b:1']);
+    expect(started).toEqual(['a:1', 'a:2', 'b:1']);
     firstGate.resolve('first');
     await first;
-    expect(started).toEqual(['a:1', 'b:1', 'a:2']);
+    expect(started).toEqual(['a:1', 'a:2', 'b:1']);
     secondGate.resolve('second');
     otherGate.resolve('other');
     expect(await Promise.all([first, second, other])).toEqual(['first', 'second', 'other']);
+  });
+
+  it('rotates waiting files so one large file cannot consume every newly available slot', async () => {
+    const scheduler = new FileScheduler(1);
+    const gate = deferred<string>();
+    const running = scheduler.schedule('file:a', () => gate.promise);
+    const started: string[] = [];
+    const ids = ['a:1', 'a:2', 'a:3', 'b:1', 'b:2', 'c:1'];
+    const queued = ids.map((id) => scheduler.schedule(`file:${id[0]}`, async () => {
+      started.push(id);
+      return id;
+    }));
+
+    gate.resolve('initial');
+    await running;
+    expect(await Promise.all(queued)).toEqual(ids);
+    expect(started).toEqual(['a:1', 'b:1', 'c:1', 'a:2', 'b:2', 'a:3']);
+  });
+
+  it('applies increased concurrency to queued work and lets excess running requests finish after a decrease', async () => {
+    const scheduler = new FileScheduler(1);
+    const gates = Array.from({ length: 5 }, () => deferred<number>());
+    const started: number[] = [];
+    const signals: AbortSignal[] = [];
+    const promises = gates.map((gate, index) => scheduler.schedule('file:a', (signal) => {
+      started.push(index);
+      signals.push(signal);
+      return gate.promise;
+    }));
+    expect(started).toEqual([0]);
+
+    scheduler.setMaxConcurrent(3);
+    expect(started).toEqual([0, 1, 2]);
+    scheduler.setMaxConcurrent(1);
+    expect(signals.every((signal) => !signal.aborted)).toBe(true);
+    gates[0]!.resolve(0);
+    await promises[0];
+    gates[1]!.resolve(1);
+    await promises[1];
+    expect(started).toEqual([0, 1, 2]);
+
+    gates[2]!.resolve(2);
+    await promises[2];
+    expect(started).toEqual([0, 1, 2, 3]);
+    gates[3]!.resolve(3);
+    await promises[3];
+    expect(started).toEqual([0, 1, 2, 3, 4]);
+    gates[4]!.resolve(4);
+    expect(await Promise.all(promises)).toEqual([0, 1, 2, 3, 4]);
   });
 
   it('cancels queued and running file work without releasing a running slot early', async () => {
@@ -99,6 +148,44 @@ describe('FileScheduler', () => {
     expect(await other).toBe('other');
     expect(otherWork).toHaveBeenCalledOnce();
     expect(await scheduler.schedule('file:a', async () => 'restart')).toBe('restart');
+  });
+
+  it('cancels every running request for a file while retaining each occupied slot', async () => {
+    const scheduler = new FileScheduler(2);
+    const gates = [deferred<string>(), deferred<string>()];
+    const signals: AbortSignal[] = [];
+    const running = gates.map((gate) => scheduler.schedule('file:a', (signal) => {
+      signals.push(signal);
+      return gate.promise;
+    }).catch((error: unknown) => error));
+    const queuedWork = vi.fn(async () => 'unused');
+    const queued = scheduler.schedule('file:a', queuedWork).catch((error: unknown) => error);
+    const otherGate = deferred<string>();
+    const otherWork = vi.fn(() => otherGate.promise);
+    const other = scheduler.schedule('file:b', otherWork);
+    const nextWork = vi.fn(async () => 'next');
+    const next = scheduler.schedule('file:c', nextWork);
+
+    scheduler.cancel('file:a');
+    expect(signals).toHaveLength(2);
+    expect(signals.every((signal) => signal.aborted)).toBe(true);
+    expect(await Promise.all([...running, queued])).toEqual([
+      expect.objectContaining({ name: 'AbortError' }),
+      expect.objectContaining({ name: 'AbortError' }),
+      expect.objectContaining({ name: 'AbortError' })
+    ]);
+    expect(queuedWork).not.toHaveBeenCalled();
+    expect(otherWork).not.toHaveBeenCalled();
+    expect(nextWork).not.toHaveBeenCalled();
+
+    gates[0]!.resolve('late result');
+    await Promise.resolve();
+    expect(otherWork).toHaveBeenCalledOnce();
+    expect(nextWork).not.toHaveBeenCalled();
+    gates[1]!.reject(new Error('aborted transport exited'));
+    expect(await next).toBe('next');
+    otherGate.resolve('other');
+    expect(await other).toBe('other');
   });
 
   it('cancels an individual queued request promptly without cancelling its file siblings', async () => {
@@ -137,6 +224,31 @@ describe('FileScheduler', () => {
     expect(await next).toBe('next');
   });
 
+  it('externally cancels one running request without cancelling a concurrent sibling', async () => {
+    const scheduler = new FileScheduler(2);
+    const cancelledGate = deferred<string>();
+    const siblingGate = deferred<string>();
+    const controller = new AbortController();
+    let siblingSignal: AbortSignal | undefined;
+    const cancelled = scheduler.schedule('file:a', () => cancelledGate.promise, controller.signal)
+      .catch((error: unknown) => error);
+    const sibling = scheduler.schedule('file:a', (signal) => {
+      siblingSignal = signal;
+      return siblingGate.promise;
+    });
+    const nextWork = vi.fn(async () => 'next');
+    const next = scheduler.schedule('file:a', nextWork);
+
+    controller.abort();
+    expect(await cancelled).toMatchObject({ name: 'AbortError' });
+    expect(siblingSignal?.aborted).toBe(false);
+    expect(nextWork).not.toHaveBeenCalled();
+    siblingGate.resolve('sibling');
+    expect(await sibling).toBe('sibling');
+    expect(await next).toBe('next');
+    cancelledGate.resolve('ignored response');
+  });
+
   it('releases a failed request slot and continues the same file queue', async () => {
     const scheduler = new FileScheduler(1);
     const gate = deferred<string>();
@@ -158,20 +270,30 @@ describe('FileScheduler', () => {
   });
 
   it('disposes idempotently, cancels outstanding tasks, and rejects new tasks', async () => {
-    const scheduler = new FileScheduler(1);
-    const gate = deferred<string>();
-    const running = scheduler.schedule('file:a', () => gate.promise).catch((error: unknown) => error);
+    const scheduler = new FileScheduler(3);
+    const gates = Array.from({ length: 3 }, () => deferred<string>());
+    const signals: AbortSignal[] = [];
+    const running = gates.map((gate) => scheduler.schedule('file:a', (signal) => {
+      signals.push(signal);
+      return gate.promise;
+    }).catch((error: unknown) => error));
     const queuedWork = vi.fn(async () => 'queued');
     const queued = scheduler.schedule('file:b', queuedWork).catch((error: unknown) => error);
     scheduler.dispose();
     scheduler.dispose();
-    expect(await running).toMatchObject({ name: 'AbortError' });
+    expect(await Promise.all(running)).toEqual([
+      expect.objectContaining({ name: 'AbortError' }),
+      expect.objectContaining({ name: 'AbortError' }),
+      expect.objectContaining({ name: 'AbortError' })
+    ]);
+    expect(signals.every((signal) => signal.aborted)).toBe(true);
     expect(await queued).toMatchObject({ name: 'AbortError' });
     await expect(scheduler.schedule('file:c', queuedWork)).rejects.toMatchObject({
       name: 'AbortError',
       message: 'Translation scheduler has been disposed.'
     });
-    gate.resolve('late result');
+    scheduler.setMaxConcurrent(64);
+    gates.forEach((gate) => gate.resolve('late result'));
     await Promise.resolve();
     expect(queuedWork).not.toHaveBeenCalled();
   });
@@ -188,10 +310,30 @@ describe('FileScheduler', () => {
     scheduler.cancel('file:unknown');
   });
 
-  it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY])(
+  it.each([0, -1, 1.5, 65, Number.NaN, Number.POSITIVE_INFINITY])(
     'rejects invalid concurrency %s',
     (limit) => {
       expect(() => new FileScheduler(limit)).toThrow(RangeError);
+      expect(() => new FileScheduler().setMaxConcurrent(limit)).toThrow(RangeError);
     }
   );
+
+  it.each([1, 64])('accepts concurrency boundary %s', async (limit) => {
+    const scheduler = new FileScheduler(limit);
+    scheduler.setMaxConcurrent(limit);
+    expect(await scheduler.schedule('file:a', async () => 'done')).toBe('done');
+  });
+
+  it('keeps the previous limit when a runtime update is invalid', async () => {
+    const scheduler = new FileScheduler(1);
+    const gate = deferred<string>();
+    const running = scheduler.schedule('file:a', () => gate.promise);
+    const queuedWork = vi.fn(async () => 'queued');
+    const queued = scheduler.schedule('file:a', queuedWork);
+    expect(() => scheduler.setMaxConcurrent(65)).toThrow(RangeError);
+    expect(queuedWork).not.toHaveBeenCalled();
+    gate.resolve('running');
+    expect(await running).toBe('running');
+    expect(await queued).toBe('queued');
+  });
 });

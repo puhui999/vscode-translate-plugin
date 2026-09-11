@@ -18,7 +18,7 @@ export function readSettings(uri?: vscode.Uri): Omit<TranslationConfig, 'apiKey'
     throw new Error('请在设置中填写 commentTranslator.baseUrl 和 model，或运行“注释译读：配置模型服务”。');
   }
   normalizeEndpoint(baseUrl);
-  const format = config.get<string>('responseFormat', 'text');
+  const format = config.get<string>('responseFormat', 'json_object');
   if (!['text', 'json_object', 'json_schema'].includes(format)) {
     throw new Error('responseFormat 必须是 text、json_object 或 json_schema。');
   }
@@ -26,12 +26,20 @@ export function readSettings(uri?: vscode.Uri): Omit<TranslationConfig, 'apiKey'
   if (!['max_tokens', 'max_completion_tokens', 'omit'].includes(tokenLimitParameter)) {
     throw new Error('tokenLimitParameter 必须是 max_tokens、max_completion_tokens 或 omit。');
   }
+  const thinking = config.get<string>('thinking', 'provider');
+  if (!['provider', 'enabled', 'disabled'].includes(thinking)) {
+    throw new Error('thinking 必须是 provider、enabled 或 disabled。');
+  }
+  const globalConfig = vscode.workspace.getConfiguration(CONFIG_SECTION);
   return {
     baseUrl,
     model,
     targetLanguage: config.get<string>('targetLanguage', '简体中文').trim() || '简体中文',
     prompt: config.get<string>('prompt', ''),
     responseFormat: format as TranslationConfig['responseFormat'],
+    temperature: boundedNumber(config, 'temperature', 0.2, 0, 2, false),
+    thinking: thinking as TranslationConfig['thinking'],
+    maxConcurrentRequests: boundedNumber(globalConfig, 'maxConcurrentRequests', 10, 1, 64),
     timeoutMs: boundedNumber(config, 'timeoutSeconds', 60, 5, 300) * 1000,
     maxBatchChars: boundedNumber(config, 'maxBatchChars', 16000, 1000, 200000),
     maxOutputTokens: boundedNumber(config, 'maxOutputTokens', 8192, 512, 65536),
@@ -58,10 +66,10 @@ export async function clearProviderApiKey(context: vscode.ExtensionContext): Pro
   await context.secrets.delete(keyName);
 }
 
-/** Reads a bounded numeric setting, rejecting non-finite values. */
-export function boundedNumber(config: vscode.WorkspaceConfiguration, key: string, fallback: number, min: number, max: number): number {
+/** Reads a bounded numeric setting, rounding down integers and rejecting non-finite values. */
+export function boundedNumber(config: vscode.WorkspaceConfiguration, key: string, fallback: number, min: number, max: number, integer = true): number {
   const value = config.get<number>(key, fallback);
-  return Number.isFinite(value) ? Math.max(min, Math.min(max, Math.floor(value))) : fallback;
+  return Number.isFinite(value) ? Math.max(min, Math.min(max, integer ? Math.floor(value) : value)) : fallback;
 }
 
 /** Configures any compatible provider, keeping an existing settings key synchronized. */

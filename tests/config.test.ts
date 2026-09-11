@@ -57,6 +57,68 @@ describe('provider configuration', () => {
     expect(settings).not.toHaveProperty('apiKey');
   });
 
+  it('defaults to JSON Object, ten concurrent requests, decimal temperature and provider thinking', () => {
+    expect(readSettings()).toMatchObject({
+      responseFormat: 'json_object',
+      maxConcurrentRequests: 10,
+      temperature: 0.2,
+      thinking: 'provider',
+    });
+  });
+
+  it.each(['text', 'json_object', 'json_schema'])(
+    'retains the explicitly selected %s output format', (format) => {
+      HOST.settings.set('responseFormat', format);
+      expect(readSettings().responseFormat).toBe(format);
+    },
+  );
+
+  it.each(['provider', 'enabled', 'disabled'])(
+    'reads the %s thinking preference', (thinking) => {
+      HOST.settings.set('thinking', thinking);
+      expect(readSettings().thinking).toBe(thinking);
+    },
+  );
+
+  it('rejects unsupported output and thinking settings', () => {
+    HOST.settings.set('responseFormat', 'xml');
+    expect(() => readSettings()).toThrow('responseFormat');
+    HOST.settings.set('responseFormat', 'json_object');
+    HOST.settings.set('thinking', 'automatic');
+    expect(() => readSettings()).toThrow('thinking');
+  });
+
+  it.each([
+    [0, 1], [-5, 1], [64, 64], [100, 64], [12.8, 12],
+    [Number.NaN, 10], [Number.POSITIVE_INFINITY, 10], ['12', 10],
+  ])('normalizes a manually edited concurrency value %s to %s', (value, expected) => {
+    HOST.settings.set('maxConcurrentRequests', value);
+    expect(readSettings().maxConcurrentRequests).toBe(expected);
+  });
+
+  it.each([
+    [0, 0], [0.35, 0.35], [1.75, 1.75], [2, 2], [-0.5, 0], [3, 2],
+    [Number.NaN, 0.2], [Number.POSITIVE_INFINITY, 0.2], ['0.8', 0.2],
+  ])('preserves or bounds temperature %s to %s without integer rounding', (value, expected) => {
+    HOST.settings.set('temperature', value);
+    expect(readSettings().temperature).toBe(expected);
+  });
+
+  it('reads the shared concurrency limit without a document resource override', () => {
+    const uri = { scheme: 'file', path: '/example.java' } as vscode.Uri;
+    const resourceConfig = {
+      ...HOST.configuration,
+      get: <T>(key: string, fallback: T): T => key === 'maxConcurrentRequests'
+        ? 64 as T : HOST.configuration.get(key, fallback),
+    };
+    HOST.settings.set('maxConcurrentRequests', 7);
+    HOST.workspace.getConfiguration.mockImplementationOnce(() => resourceConfig)
+      .mockImplementationOnce(() => HOST.configuration);
+    expect(readSettings(uri).maxConcurrentRequests).toBe(7);
+    expect(HOST.workspace.getConfiguration).toHaveBeenNthCalledWith(1, 'commentTranslator', uri);
+    expect(HOST.workspace.getConfiguration).toHaveBeenNthCalledWith(2, 'commentTranslator');
+  });
+
   it('prefers a nonempty settings key over a stored provider secret', async () => {
     const { context, secrets } = credentials([[secretKey('https://example.test/v1'), 'dummy-stored-key']]);
     HOST.settings.set('apiKey', '  dummy-configured-key  ');
