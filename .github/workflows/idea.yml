@@ -1,0 +1,146 @@
+name: IDEA plugin
+
+on:
+  push:
+    branches:
+      - codex/intellij-idea
+    tags:
+      - 'idea-v*'
+    paths:
+      - 'idea-plugin/**'
+      - '.github/workflows/idea.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: idea-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: idea-plugin
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      asset: ${{ steps.version.outputs.asset }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify plugin version and release notes
+        id: version
+        working-directory: .
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          properties = Path('idea-plugin/gradle.properties').read_text()
+          versions = re.findall(r'^pluginVersion\s*=\s*(\S+)\s*$', properties, re.MULTILINE)
+          if len(versions) != 1 or not re.fullmatch(r'\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?', versions[0]):
+              raise SystemExit('Expected one valid pluginVersion in idea-plugin/gradle.properties')
+          version = versions[0]
+          if os.environ['GITHUB_REF'].startswith('refs/tags/'):
+              tag = os.environ['GITHUB_REF_NAME']
+              if tag != f'idea-v{version}':
+                  raise SystemExit('IDEA tag must match pluginVersion')
+              notes = Path('.github/release-notes') / f'{tag}.md'
+              if not notes.is_file() or not notes.read_text().strip():
+                  raise SystemExit('IDEA release notes are missing or empty')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'version={version}\nasset=idea-comment-translator-{version}.zip\n')
+          PY
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Test and package against the official Linux IDEA distribution
+        run: ./gradlew --no-daemon --console=plain test buildPlugin
+      - name: Verify ZIP metadata and write checksum
+        working-directory: .
+        env:
+          PLUGIN_VERSION: ${{ steps.version.outputs.version }}
+          ASSET_NAME: ${{ steps.version.outputs.asset }}
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import io
+          import os
+          import xml.etree.ElementTree as ET
+          import zipfile
+          from pathlib import Path
+
+          directory = Path('idea-plugin/build/distributions')
+          asset = directory / os.environ['ASSET_NAME']
+          matches = []
+          with zipfile.ZipFile(asset) as bundle:
+              for name in bundle.namelist():
+                  if not name.endswith('.jar'):
+                      continue
+                  with zipfile.ZipFile(io.BytesIO(bundle.read(name))) as library:
+                      if 'META-INF/plugin.xml' not in library.namelist():
+                          continue
+                      descriptor = ET.fromstring(library.read('META-INF/plugin.xml'))
+                      if descriptor.findtext('id') == 'com.puhui.comment-translator':
+                          matches.append(descriptor)
+          if len(matches) != 1 or matches[0].findtext('version') != os.environ['PLUGIN_VERSION']:
+              raise SystemExit('Packaged IDEA plugin ID/version does not match the release')
+          checksum = hashlib.sha256(asset.read_bytes()).hexdigest()
+          (directory / 'SHA256SUMS.txt').write_text(f'{checksum}  {asset.name}\n')
+          PY
+      - name: Upload plugin ZIP and checksum
+        uses: actions/upload-artifact@v4
+        with:
+          name: idea-plugin-${{ steps.version.outputs.version }}
+          path: |
+            idea-plugin/build/distributions/${{ steps.version.outputs.asset }}
+            idea-plugin/build/distributions/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload JUnit and HTML test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: idea-test-reports-${{ github.run_id }}
+          path: |
+            idea-plugin/build/test-results/test/*.xml
+            idea-plugin/build/reports/tests/test/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/idea-v')
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: idea-plugin-${{ needs.build.outputs.version }}
+          path: release-assets
+      - name: Verify downloaded asset
+        working-directory: release-assets
+        run: sha256sum --check SHA256SUMS.txt
+      - name: Publish IDEA preview release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ASSET_NAME: ${{ needs.build.outputs.asset }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            "release-assets/$ASSET_NAME" release-assets/SHA256SUMS.txt \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --prerelease \
+            --title "注释译读 IDEA $GITHUB_REF_NAME" \
+            --notes-file ".github/release-notes/${GITHUB_REF_NAME}.md"

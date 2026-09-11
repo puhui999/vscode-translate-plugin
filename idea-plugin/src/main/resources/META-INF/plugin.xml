@@ -1,0 +1,34 @@
+<idea-plugin>
+  <id>com.puhui.comment-translator</id>
+  <name>注释译读 · AI Comment Translator</name>
+  <vendor url="https://github.com/puhui999/vscode-translate-plugin">puhui999</vendor>
+  <description><![CDATA[
+    在源码注释下方显示无边框、多行 AI 译文。支持自定义 OpenAI 兼容服务、批量请求和本地 SQLite 缓存。
+    原文始终可编辑，译文不会写入源码。包含无需 API 的离线体验示例。
+  ]]></description>
+  <depends>com.intellij.modules.platform</depends>
+  <depends>com.intellij.modules.lang</depends>
+  <extensions defaultExtensionNs="com.intellij">
+    <postStartupActivity implementation="com.puhui.commenttranslator.TranslationStartup"/>
+    <applicationConfigurable parentId="tools" id="com.puhui.comment-translator.settings" displayName="注释译读" instance="com.puhui.commenttranslator.settings.TranslationConfigurable"/>
+    <statusBarWidgetFactory id="PuhuiCommentTranslatorStatus" implementation="com.puhui.commenttranslator.TranslationStatusFactory"/>
+    <notificationGroup id="Comment Translator" displayType="BALLOON"/>
+  </extensions>
+  <actions>
+    <group id="CommentTranslator.Menu" text="注释译读" popup="true">
+      <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+      <add-to-group group-id="ToolsMenu" anchor="last"/>
+      <action id="CommentTranslator.TranslateFile" class="com.puhui.commenttranslator.actions.TranslateFileAction" text="翻译当前文件注释"/>
+      <action id="CommentTranslator.TranslateComment" class="com.puhui.commenttranslator.actions.TranslateCommentAction" text="翻译当前注释"/>
+      <action id="CommentTranslator.ToggleVisible" class="com.puhui.commenttranslator.actions.ToggleVisibleAction" text="显示 / 隐藏译文"/>
+      <action id="CommentTranslator.ToggleAutomatic" class="com.puhui.commenttranslator.actions.ToggleAutomaticAction" text="自动翻译"/>
+      <action id="CommentTranslator.Reader" class="com.puhui.commenttranslator.actions.ReaderAction" text="打开只读译文"/>
+      <action id="CommentTranslator.CopyTranslation" class="com.puhui.commenttranslator.actions.CopyTranslationAction" text="复制当前译文"/>
+      <action id="CommentTranslator.ExpandTranslation" class="com.puhui.commenttranslator.actions.ExpandTranslationAction" text="展开 / 收起当前译文"/>
+      <separator/>
+      <action id="CommentTranslator.Settings" class="com.puhui.commenttranslator.actions.SettingsAction" text="配置翻译服务…"/>
+      <action id="CommentTranslator.ClearCache" class="com.puhui.commenttranslator.actions.ClearCacheAction" text="清除本地翻译缓存"/>
+      <action id="CommentTranslator.Demo" class="com.puhui.commenttranslator.actions.DemoAction" text="打开离线体验示例"/>
+    </group>
+  </actions>
+</idea-plugin>

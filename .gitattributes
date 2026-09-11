@@ -1,0 +1,2 @@
+idea-plugin/gradlew text eol=lf
+idea-plugin/gradlew.bat text eol=crlf

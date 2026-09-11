@@ -2,6 +2,8 @@
 
 在 VS Code 中批量翻译代码注释。默认打开无边框的只读源码对照视图：独立注释、文档注释在下方显示多行译文，行尾注释在原注释后追加译文。原生源码编辑器在原注释位置逐行显示译文，悬停查看原文。译文不会写入源文件，不影响源码保存或 Git diff。
 
+**IntelliJ IDEA 验证版：** [安装、使用与构建说明](idea-plugin/README.md)。IDEA 版在原注释下方显示原生多行译文，首版支持 Java、Kotlin 和 XML/HTML 宿主注释，使用独立的插件 ZIP 与 SQLite 缓存。下文为 VS Code 版说明。
+
 ## 安装和体验
 
 1. 从 [GitHub Releases](https://github.com/puhui999/vscode-translate-plugin/releases/latest) 下载最新 `.vsix`；自行构建则运行 `npm ci` 和 `npm run package`。
