@@ -37,7 +37,7 @@ import javax.swing.Timer
 import kotlin.math.max
 
 /** Owns read-only, wrapping translations below comments in one source editor. */
-class TranslationInlays(private val editor: Editor, parent: Disposable) : Disposable {
+class TranslationInlays(private val editor: Editor, parent: Disposable) : TranslationDisplay {
     private data class Metrics(val width: Int, val font: Font, val context: FontRenderContext, val lineHeight: Int, val tabSize: Int)
     private data class Entry(val item: DisplayTranslation, val renderer: TranslationRenderer, val inlay: Inlay<TranslationRenderer>)
     private data class ReadingAnchor(val offset: Int, val deltaY: Int, val horizontalOffset: Int)
@@ -122,7 +122,7 @@ class TranslationInlays(private val editor: Editor, parent: Disposable) : Dispos
     }
 
     /** Replaces the displayed snapshot without changing the source document or caret. Safe to call from any thread. */
-    fun render(items: List<DisplayTranslation>) {
+    override fun render(items: List<DisplayTranslation>) {
         val snapshot = items.toList()
         onEdt {
             val source = editor.document.immutableCharSequence
@@ -161,14 +161,14 @@ class TranslationInlays(private val editor: Editor, parent: Disposable) : Dispos
     }
 
     /** Removes all translations and expansion state while leaving source text and selection unchanged. */
-    fun clear() = onEdt {
+    override fun clear() = onEdt {
         preserveReadingAnchor { removeAll() }
         lastItems = emptyList()
         expandedIds.clear()
     }
 
     /** Toggles a long translation by ID for keyboard actions. Must be called on the event dispatch thread. */
-    fun toggle(id: String): Boolean {
+    override fun toggle(id: String): Boolean {
         if (disposed || editor.isDisposed) return false
         check(SwingUtilities.isEventDispatchThread()) { "Translation expansion must run on the event dispatch thread" }
         val entry = entries[id] ?: return false

@@ -26,6 +26,7 @@ class TranslationConfigurable : Configurable {
     private val deleteKey = JCheckBox("删除此服务已保存的 Key（无需认证的服务可不配置 Key）")
     private val timeout = JSpinner(SpinnerNumberModel(60, 5, 300, 5))
     private val budget = JSpinner(SpinnerNumberModel(16000, 1000, 200000, 1000))
+    private val displayMode = JComboBox(arrayOf("原位译文（默认）", "上下对照"))
     private var panel: JPanel? = null
 
     /** Names the settings page. */
@@ -53,6 +54,8 @@ class TranslationConfigurable : Configurable {
         add("附加翻译要求", JScrollPane(prompt))
         add("请求超时（秒）", timeout)
         add("批次字符预算", budget)
+        add("源码显示方式", displayMode)
+        add("", JLabel("原位译文：悬停查看原文，点击后编辑；不会修改源文件。"))
         add("", automatic)
         add("", JLabel("配置后注释会发送到此服务；已缓存内容直接复用。"))
         add("", JLabel("工具 → 注释译读 → 打开离线体验示例，无需 API 即可查看效果。"))
@@ -80,6 +83,18 @@ class TranslationConfigurable : Configurable {
         }
         if (remove) next.automatic = false
         val settings = TranslationSettings.getInstance()
+        val previous = settings.state.copy()
+        if (!settings.saving && password.isEmpty() && !remove &&
+            previous.copy(automatic = next.automatic, displayMode = next.displayMode) == next) {
+            settings.update(next)
+            ProjectManager.getInstance().openProjects.filterNot { it.isDisposed }.forEach {
+                val controller = TranslationController.getInstance(it)
+                if (previous.displayMode != next.displayMode) controller.displayConfigurationChanged()
+                if (previous.automatic != next.automatic) controller.automaticChanged()
+            }
+            password.fill('\u0000')
+            return
+        }
         val sequence = settings.beginSave()
         ProjectManager.getInstance().openProjects.filterNot { it.isDisposed }.forEach { TranslationController.getInstance(it).suspendForConfiguration() }
         key.text = ""; deleteKey.isSelected = false
@@ -105,6 +120,7 @@ class TranslationConfigurable : Configurable {
         endpoint.text = state.baseUrl; model.text = state.model; language.text = state.targetLanguage
         prompt.text = state.prompt; automatic.isSelected = state.automatic
         timeout.value = state.timeoutSeconds.coerceIn(5, 300); budget.value = state.maxBatchChars.coerceIn(1000, 200000)
+        displayMode.selectedIndex = if (state.displayMode == "inlays") 1 else 0
         key.text = ""; deleteKey.isSelected = false
     }
 
@@ -112,5 +128,6 @@ class TranslationConfigurable : Configurable {
     override fun disposeUIResources() { key.text = ""; panel = null }
 
     private fun readForm() = TranslationSettingsState(endpoint.text.trim(), model.text.trim(), language.text.trim().ifEmpty { "简体中文" },
-        prompt.text, automatic.isSelected, timeout.value as Int, budget.value as Int)
+        prompt.text, automatic.isSelected, timeout.value as Int, budget.value as Int,
+        if (displayMode.selectedIndex == 1) "inlays" else "replacement")
 }

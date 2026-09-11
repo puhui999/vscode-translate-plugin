@@ -21,6 +21,7 @@ data class TranslationSettingsState(
     var automatic: Boolean = true,
     var timeoutSeconds: Int = 60,
     var maxBatchChars: Int = 16000,
+    var displayMode: String = "replacement",
 )
 
 /** Persists provider configuration outside project files. */

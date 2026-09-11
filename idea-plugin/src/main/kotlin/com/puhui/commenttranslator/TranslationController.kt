@@ -30,6 +30,9 @@ import com.puhui.commenttranslator.cache.cacheContext
 import com.puhui.commenttranslator.cache.cacheKey
 import com.puhui.commenttranslator.editor.DisplayTranslation
 import com.puhui.commenttranslator.editor.TranslationInlays
+import com.puhui.commenttranslator.editor.TranslationDisplay
+import com.puhui.commenttranslator.editor.TranslationReplacements
+import com.puhui.commenttranslator.editor.TRANSLATED_COMMENT_ID
 import com.puhui.commenttranslator.parser.CommentBlock
 import com.puhui.commenttranslator.parser.CommentFormatter
 import com.puhui.commenttranslator.parser.CommentScanner
@@ -56,7 +59,7 @@ private class FileSession(val file: VirtualFile, val document: Document) : Dispo
     val budget = AtomicInteger(AUTOMATIC_LIMIT)
     val admitted = ConcurrentHashMap.newKeySet<String>()
     val executionLock = Any()
-    val renderers = IdentityHashMap<Editor, TranslationInlays>()
+    val renderers = IdentityHashMap<Editor, TranslationDisplay>()
     var future: Future<*>? = null
     var timer: ScheduledFuture<*>? = null
     var automaticRequest = true
@@ -109,6 +112,14 @@ class TranslationController(private val project: Project) : Disposable {
             }
         }, this)
         EditorFactory.getInstance().addEditorFactoryListener(object : EditorFactoryListener {
+            override fun editorCreated(event: EditorFactoryEvent) {
+                if (event.editor.project !== project) return
+                ApplicationManager.getApplication().invokeLater {
+                    onUi {
+                        if (!event.editor.isDisposed) sessions.values.firstOrNull { it.document === event.editor.document }?.let(::render)
+                    }
+                }
+            }
             override fun editorReleased(event: EditorFactoryEvent) {
                 sessions.values.forEach { it.renderers.remove(event.editor)?.let(Disposer::dispose) }
             }
@@ -145,7 +156,7 @@ class TranslationController(private val project: Project) : Disposable {
         session.visible = true
         val editor = FileEditorManager.getInstance(project).selectedTextEditor
         if (onlyComment && editor?.document !== session.document) { notifyTranslation(project, "请返回源码，将光标放到需要翻译的注释中。", false); return@onUi }
-        val offset = if (onlyComment) editor!!.caretModel.offset else null
+        val offset = if (onlyComment) currentBlock()?.second?.startOffset ?: editor!!.caretModel.offset else null
         request(session, false, offset)
     }
 
@@ -169,6 +180,16 @@ class TranslationController(private val project: Project) : Disposable {
         refreshStatus()
     }
 
+    /** Changes only presentation, reusing existing translations without starting network requests. */
+    fun displayConfigurationChanged() = onUi {
+        sessions.values.forEach { session ->
+            session.renderers.values.forEach(Disposer::dispose)
+            session.renderers.clear()
+            render(session)
+        }
+        refreshStatus()
+    }
+
     /** Opens the native provider settings page. */
     fun openSettings() { ShowSettingsUtil.getInstance().showSettingsDialog(project, "注释译读") }
 
@@ -181,7 +202,9 @@ class TranslationController(private val project: Project) : Disposable {
 
     /** Provides a keyboard-accessible counterpart to the inlay expansion control. */
     fun expandCurrentTranslation() = onUi {
-        currentBlock()?.let { (session, block) -> session.renderers.values.forEach { it.toggle(block.id) } }
+        currentBlock()?.let { (session, block) ->
+            FileEditorManager.getInstance(project).selectedTextEditor?.let { session.renderers[it]?.toggle(block.id) }
+        }
             ?: notifyTranslation(project, "请将光标放到已有译文的注释中。", false)
     }
 
@@ -230,6 +253,11 @@ class TranslationController(private val project: Project) : Disposable {
                 /** Description. */
                 private int count;
 
+                private int retryLimit = /* Maximum number of retry attempts. */ 3;
+
+                private int fallback = /* Read from the local cache before contacting the remote service.
+                    */ 0;
+
                 /**
                  * Returns the cached profile for the supplied user.
                  * @param userId Unique user identifier.
@@ -269,10 +297,10 @@ class TranslationController(private val project: Project) : Disposable {
         if (!eligible(file)) return
         lastFile = file
         val session = session(file) ?: return
+        if (session.version == session.document.modificationStamp) render(session)
         if (session.file.getUserData(DEMO_FILE) == true) { if (session.translations.isEmpty()) request(session, false); return }
         if (settings.state.automatic && ready(false)) {
             if (session.completion.needsAutomaticRun(session.document.modificationStamp, session.future?.isDone == false)) schedule(session)
-            else render(session)
         }
     }
 
@@ -397,9 +425,18 @@ class TranslationController(private val project: Project) : Disposable {
     private fun render(session: FileSession) {
         val editors = EditorFactory.getInstance().getEditors(session.document, project).filterNot { it.isDisposed || it.isViewer }
         val items = if (!session.visible || session.version != session.document.modificationStamp) emptyList() else session.blocks.mapNotNull { block ->
-            session.translations[block.id]?.let { DisplayTranslation(block.id, block.startOffset, block.endOffset, CommentFormatter.format(block, it), block.indent) }
+            session.translations[block.id]?.let { DisplayTranslation(block.id, block.startOffset, block.endOffset, CommentFormatter.format(block, it), block.indent, block.rawText) }
         }
-        editors.forEach { editor -> session.renderers.getOrPut(editor) { TranslationInlays(editor, session) }.render(items) }
+        editors.forEach { editor ->
+            val replacement = settings.state.displayMode != "inlays"
+            val existing = session.renderers[editor]
+            if (existing != null && (existing is TranslationReplacements) != replacement) {
+                Disposer.dispose(existing); session.renderers.remove(editor)
+            }
+            session.renderers.getOrPut(editor) {
+                if (replacement) TranslationReplacements(editor, session) else TranslationInlays(editor, session)
+            }.render(items)
+        }
     }
 
     private fun activeFile(): VirtualFile? {
@@ -412,7 +449,11 @@ class TranslationController(private val project: Project) : Disposable {
         val session = sessions[file.url] ?: return null
         val editor = FileEditorManager.getInstance(project).selectedTextEditor ?: return null
         if (editor.document !== session.document || session.version != session.document.modificationStamp) return null
-        val block = session.blocks.firstOrNull { editor.caretModel.offset in it.startOffset until it.endOffset && session.translations.containsKey(it.id) } ?: return null
+        val offset = editor.caretModel.offset
+        val foldedId = editor.foldingModel.getCollapsedRegionAtOffset(offset)?.getUserData(TRANSLATED_COMMENT_ID)
+        val block = session.blocks.firstOrNull {
+            (it.id == foldedId || offset in it.startOffset until it.endOffset) && session.translations.containsKey(it.id)
+        } ?: return null
         return session to block
     }
 
@@ -432,7 +473,7 @@ class TranslationController(private val project: Project) : Disposable {
         text.startsWith("Returns the cached profile") -> "从本地缓存读取指定用户的资料。\n@param userId 用户的唯一标识符。\n@return 已缓存的用户资料；缓存中没有对应数据时返回 null。"
         text.startsWith("Read from the local cache") -> "先读取本地缓存，再决定是否访问远程服务。"
         text.startsWith("Maximum number") -> "请求失败时允许的最大重试次数。"
-        text.startsWith("This explanation") -> "这是一段用于检查多行阅读体验的较长说明。译文根据编辑器当前的可用宽度换行，拖动分栏或调整字体后会重新排版。\n源码始终保持可编辑，译文不会写入文件，也不会改变保存内容。\n较长的译文首先显示四行，点击下方的展开操作可在原处阅读全文。\n展开和收起不会重新请求模型，也不会移动源码中的光标。\n关闭再打开相同源码文件时，真实翻译会优先使用 SQLite 中的已有结果。\n此示例使用固定译文，不调用网络，也不写入翻译缓存。"
+        text.startsWith("This explanation") -> "译文直接显示在原注释的位置，并根据编辑器宽度自动换行。\n悬停可查看原文，点击后恢复原注释进行编辑；源码和保存内容不会被译文修改。\n独立注释完整显示多行译文，保留注释符号，不再上下重复展示同一段内容。\n显示切换、查看原文和复制译文都不会请求模型。\n关闭再打开同一文件时，真实翻译会优先使用 SQLite 中的已有结果。\n此示例使用固定译文，不调用网络，也不写入翻译缓存。"
         else -> null
     }
 

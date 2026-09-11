@@ -58,9 +58,9 @@ class CopyTranslationAction : TranslationAction() {
     override fun actionPerformed(e: AnActionEvent) { e.project?.let { TranslationController.getInstance(it).copyCurrentTranslation() } }
 }
 
-/** Exposes inlay expansion to keyboard and action search users. */
+/** Exposes original-text reveal and translation expansion to keyboard users. */
 class ExpandTranslationAction : TranslationAction() {
-    /** Toggles the translation at the source caret. */
+    /** Toggles the original or expanded translation at the source caret in the active editor. */
     override fun actionPerformed(e: AnActionEvent) { e.project?.let { TranslationController.getInstance(it).expandCurrentTranslation() } }
 }
 

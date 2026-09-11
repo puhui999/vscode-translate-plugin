@@ -59,6 +59,17 @@ class TranslationLayoutTest {
         assertFalse(result.canToggle)
     }
 
+    /** Source replacements always expose every row and never append an inlay-only operation line. */
+    @Test fun replacementLayoutHasNoPreviewLimitOrControls() {
+        val text = (1..15).joinToString("\n") { " * 完整译文第 $it 行。" }
+        val result = TranslationLayout.build(text, "    ", 420, font, context, 18f, 4,
+            expanded = false, previewLines = null)
+        assertEquals(15, result.lines.size)
+        assertEquals(text, result.lines.joinToString("\n") { it.text })
+        assertFalse(result.canToggle)
+        assertNull(result.controlText)
+    }
+
     /** CRLF, blank paragraphs, and a trailing blank line survive layout. */
     @Test fun hardLineBreaksAndBlankLinesArePreserved() {
         val result = layout("/**\r\n * 第一段。\r\n\r\n * 第二段。\r\n */\r\n", expanded = true)

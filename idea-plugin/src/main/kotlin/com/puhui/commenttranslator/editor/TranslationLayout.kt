@@ -10,13 +10,14 @@ import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.min
 
-/** Immutable source coordinates and translated text displayed below a comment. */
+/** Immutable source coordinates and translated text for an editor presentation. */
 data class DisplayTranslation(
     val id: String,
     val startOffset: Int,
     val endOffset: Int,
     val text: String,
     val indent: String,
+    val originalText: String? = null,
 )
 
 internal data class TranslationLine(
@@ -63,10 +64,12 @@ internal object TranslationLayout {
         lineHeight: Float,
         tabSize: Int,
         expanded: Boolean,
+        previewLines: Int? = COLLAPSED_LINES,
     ): TranslationTextLayout {
         require(width > 0) { "Translation width must be positive" }
         require(lineHeight > 0 && lineHeight.isFinite()) { "Translation line height must be positive" }
         require(tabSize > 0) { "Tab size must be positive" }
+        require(previewLines == null || previewLines > 0) { "Preview line count must be positive" }
         val spaceWidth = TextLayout(" ", font, context).advance
         val indentPixels = min(
             indentationColumns(indent, tabSize) * spaceWidth,
@@ -90,7 +93,7 @@ internal object TranslationLayout {
                 wrapped.add(expandedTabs.substring(start, measurer.position) to layout)
             }
         }
-        val shown = if (expanded) wrapped else wrapped.take(COLLAPSED_LINES)
+        val shown = if (expanded || previewLines == null) wrapped else wrapped.take(previewLines)
         var y = VERTICAL_PADDING
         val lines = shown.map { (lineText, layout) ->
             val measuredHeight = layout?.let { it.ascent + it.descent + it.leading } ?: lineHeight
@@ -99,7 +102,7 @@ internal object TranslationLayout {
             TranslationLine(lineText, layout, y + (height - measuredHeight) / 2f + ascent, height)
                 .also { y += height }
         }
-        var controlText = if (wrapped.size > COLLAPSED_LINES) {
+        var controlText = if (previewLines != null && wrapped.size > previewLines) {
             if (expanded) "收起" else "展开（共 ${wrapped.size} 行）"
         } else null
         var control = controlText?.let { TextLayout(attributedText(it, font).iterator, context) }
