@@ -2,11 +2,13 @@
 
 调研日期：2026-09-10。基于 VS Code 版 `v0.2.6`（`9e1ba0b`）；工作分支：`codex/intellij-idea`。
 
-本文是实现前的设计与验证计划。本轮已检查现有代码、本机 IDEA 元数据及官方 SDK；尚未创建可安装的 IDEA 插件，也未在 IDEA 中验证译文显示效果。
+本文是实现前的设计与验证计划。已检查现有代码、本机 IDEA 元数据及官方 SDK；尚未创建可安装的 IDEA 插件，也未在 IDEA 中验证译文显示效果。设计原则已根据用户反馈调整：IDEA 独立设计，以阅读和编辑体验为目标，不要求与 VS Code 版逐项保持一致。
 
 ## 结论与首版范围
 
-**可行。建议使用 Kotlin 开发原生 IntelliJ 插件，延续现有翻译协议、缓存规则和交互，平台接入部分重新实现。** 最大的不确定性是源码编辑器里的多行原位替换；先用离线译文验证显示，再接入已有业务流程。
+**可行。建议使用 Kotlin 开发原生 IntelliJ 插件，默认在源码注释下方显示无边框、多行、可展开的译文。** 保留原注释直接编辑，日常阅读留在原生编辑器；长文档和 Markdown 再主动打开阅读器。AI、缓存与结构保护规则可以复用，交互与平台实现独立设计。
+
+默认显示使用 block Inlay，不把实验性的原位替换作为首版前提。首个原型重点验证多行排版、阅读位置稳定、输入与折叠的配合，而不是复现 VS Code 的视觉替换手法。
 
 首版先在本机 IDEA 2026.2.0.1 上完成 Java、Kotlin、XML/HTML 注释与 Markdown 全文只读翻译。其他语言通过通用解析入口逐步验证。不能仅因为同属 IntelliJ 平台，就承诺兼容所有 JetBrains IDE 和语言。
 
@@ -16,10 +18,50 @@
 | 自定义接口、模型、Key | 原生设置页、JVM HTTP、PasswordSafe | 高；保留 OpenAI Chat Completions 兼容参数 |
 | SQLite 查库、只翻译缺失项 | 独立 SQLite JDBC 数据库 | 高；不与 VS Code 共写同一个数据库文件 |
 | 按文件批量翻译 | ID 对应协议、去重、按预算拆批 | 高；小文件一批，大文件多批 |
-| 无边框只读阅读视图 | 独立阅读标签页，嵌入 JCEF | 高；HTML 布局可复用，主题与消息桥重做 |
-| 源码原位显示、悬停原文 | 折叠区域与自定义绘制；按注释形态选择 | 有条件可行；须先验证换行、编辑和现有折叠冲突 |
+| 日常源码译读 | 原注释下方 block Inlay，自定义多行排版 | 高；无需隐藏原文，换行与鼠标命中需自行实现并实测 |
+| 长文档阅读 | 用户主动打开独立只读标签页 | 高；使用适合长文的排版，不强制复刻现有页面 |
+| 仅显示译文的原位模式 | 后续可选探索 | 非首版前提；实验性折叠 API 与编辑行为需要额外验证 |
 | Markdown 右键全文翻译 | 编辑器/项目树 Action、独立只读阅读器 | 高；JVM Markdown 解析与结构校验需要移植 |
 | 注释符号、文档标签 | 本地恢复外壳、翻译结果结构校验 | 高；保留现有验证边界，不假设 AI 会完全遵守格式 |
+
+## 产品目标与默认体验
+
+设计读取：面向长时间阅读、修改源码的开发者，采用 IDEA 原生工具的交互与视觉语言。沿用当前编辑器主题、字体、行距和缩进，不另设品牌化编辑器皮肤。设计参数为视觉变化 2/10、动效 1/10、信息密度 7/10：保持熟悉的编辑器，只增加读懂注释所需的信息。
+
+体验优先级：读懂内容、保持当前阅读位置、正常编辑、控制信息密度、减少重复请求。与另一平台外观一致不作为验收目标。
+
+| 场景 | 推荐行为 | 选择理由 |
+| --- | --- | --- |
+| 日常看代码 | 原注释保留，在每个逻辑注释组下方显示一个无边框译文块 | 原文与译文就近对应，输入与选择沿用原生行为 |
+| 短行尾注释 | 译文放在该源码行下方，按代码缩进对齐 | 避免向右挤压代码、长译文或窄分栏导致横向滚动 |
+| 同行多个注释 | 按原文顺序在一个行下区域分项展示，可定位对应注释 | 防止多个浮层重叠或无法辨认译文对应关系 |
+| 长注释 | 初始显示至多四个排版行，明确提供“展开全文”；在原处完整展开 | 兼顾信息密度，不使用悬浮滚动框或嵌套滚动条；四行为原型起始值，按实测调整 |
+| 大量文档注释、Markdown | 主动打开阅读标签页，支持原文/译文切换和返回源码 | 长文有充足排版空间，不自动抢走编辑器焦点 |
+| 只想看原代码 | 文件级“显示/隐藏译文”动作 | 切换只改变显示，不清缓存、不重新请求 AI |
+| 偶尔查一条注释 | 编辑器右键或可配置快捷键翻译当前注释 | 自动翻译关闭时也有直接入口，不必启用整个文件 |
+
+译文保留注释外壳和文档标签，如 `//`、`/** */`、`<!-- -->`、`*`、`@param` 与参数名。允许译文按阅读宽度重新排版，不要求译文行数和源文相同。普通复制仍复制源码；“复制译文”是明确的独立动作。
+
+把“显示译文”和“自动翻译”分开：前者控制可见性，后者控制是否自动发请求。停止自动翻译会取消自动任务，已完成且仍匹配当前内容的译文可保留；隐藏译文不会改变自动翻译设置。命令名称和状态提示明确表达各自作用。
+
+常用入口只保留显示开关、自动翻译开关、当前注释翻译和阅读全文。模型配置、缓存管理、失败重试放在原生设置/状态菜单，避免每条注释常驻一排按钮。展开、收起、鼠标移动和阅读器切换均不触发 AI 请求。
+
+## 状态与体验验收
+
+| 状态或操作 | 可见反馈与恢复行为 |
+| --- | --- |
+| 未配置 | 文件级状态提示“配置翻译服务”；不连续弹窗，不发请求 |
+| 缓存命中 | 合并显示匹配的译文，状态可查看命中数量，不逐条播放动画 |
+| 翻译中 | 文件级进度，原代码可继续编辑；已经成功的译文保留 |
+| 部分失败 | 标明失败数量和“重试未完成”；有效项不重复付费 |
+| 编辑注释 | 只将受影响块的旧译文标记失效或清理，防抖后更新；单纯移动光标不反复隐藏/重建译文 |
+| 展开/收起 | 不移动源码光标、不改变选择、不产生源码修改标记；焦点可通过键盘到达相同动作 |
+| 结果到达 | 批次合并更新，维护当前源码阅读锚点；静止视口上方插入内容时，锚点偏移目标不超过一行 |
+| 连续滚动 | 不因进入/离开视口反复增加、删除已有区域高度，不强制跳回旧阅读位置 |
+| 代码折叠 | 被隐藏源码对应的译文一并隐藏；展开后恢复且不重复创建，插件关闭不改变用户原有折叠状态 |
+| IDE 文档渲染开启 | 验证具体组合，避免原文渲染、原注释和译文三份叠加；不修改全局设置 |
+
+自绘译文不会自动获得原生文本选择和屏幕阅读器能力。首版提供可通过键盘调用的“复制当前译文”和可选择文本的只读阅读入口；在实际 IDE 中验证可访问性，不把画出来的文字当作已经具备完整编辑器行为。
 
 ## 平台与仓库选择
 
@@ -49,7 +91,7 @@ idea-plugin/
 shared/fixtures/             # 后续提取两端共用的行为样例
 ```
 
-不依赖用户额外安装 Node.js，也不在 IDE 启动常驻 Node 辅助进程。将 TypeScript 的规则移植到 Kotlin，比维护两套运行时及本地进程通信更适合这个体量。阅读器的 HTML/CSS 可以作为静态资源复用，不能直接调用 VS Code Webview 接口。
+不依赖用户额外安装 Node.js，也不在 IDE 启动常驻 Node 辅助进程。将 TypeScript 的规则移植到 Kotlin，比维护两套运行时及本地进程通信更适合这个体量。阅读器的 HTML/CSS 可作为实现参考，但不为复用而固定其排版；不能直接调用 VS Code Webview 接口。
 
 ## 注释解析与语言覆盖
 
@@ -73,31 +115,25 @@ PSI 的解析模型和注释 token 定义由语言支持提供，不等于任意
 
 Python 延续当前范围，暂不支持；docstring 不自动当成注释。语言相关依赖按需声明，不能因为支持 Java，就让缺少 Java 模块的产品加载 Java 专用类。[平台与语言依赖](https://plugins.jetbrains.com/docs/intellij/plugin-compatibility.html)。
 
-## 源码视图：先验证显示，再决定最终实现
+## 源码视图：原生 block Inlay
 
-IntelliJ 的 Inlay 可以添加虚拟内容，折叠模型可以在不修改文档的情况下隐藏范围，但两者不是直接等价于 VS Code Decoration。原生自定义绘制需要负责字体、缩进、缩放、主题、换行与鼠标命中。
+`InlayModel.addBlockElement()` 可以在源码行间插入视觉区域；`EditorCustomElementRenderer` 提供宽度、高度和绘制入口，没有强制边框，也不要求 block 高度为单行。这适合将译文放在注释结束行下方，同时保持源 `Document` 不变。[InlayModel](https://github.com/JetBrains/intellij-community/blob/master/platform/editor-ui-api/src/com/intellij/openapi/editor/InlayModel.java)、[Renderer API](https://github.com/JetBrains/intellij-community/blob/master/platform/editor-ui-api/src/com/intellij/openapi/editor/EditorCustomElementRenderer.java)。
 
-拟验证以下两种路径：
+实现要求：
 
-- **短行/行尾/夹在代码中的注释**：普通 fold placeholder 显示格式化后的译文，隐藏范围严格限定到注释；保护同一行前后的代码。普通占位符中的换行会被编辑器替换为空格，不能用它实现多行译文，也不依赖其内部自动换行。长译文的阅读体验、折叠外观能否满足无边框要求，必须实测。[编辑器对占位符的处理](https://github.com/JetBrains/intellij-community/blob/master/platform/platform-impl/src/com/intellij/openapi/editor/impl/view/EditorView.java)。
-- **整行独立注释和多行文档注释**：评估 `CustomFoldRegion` 自定义绘制，在被隐藏的整行区域里按实际宽度绘制多行译文。它只能覆盖完整文档行，不能直接用于包含业务代码的整行范围；区域不能普通展开，恢复原文需要移除后按需重建。相关 API 目前标记为 `Experimental`，必须封装适配层并做指定版本验证。[CustomFoldRegion](https://github.com/JetBrains/intellij-community/blob/master/platform/editor-ui-api/src/com/intellij/openapi/editor/CustomFoldRegion.java)、[FoldingModel](https://github.com/JetBrains/intellij-community/blob/master/platform/editor-ui-api/src/com/intellij/openapi/editor/FoldingModel.java)。
+1. 原文与译文保持映射，外部缩进按源代码计算；同一逻辑注释组只创建一个 block。
+2. 插件按当前 viewport 可用宽度排版，不能采用可能被长代码撑大的 content component 宽度。读取当前 editor 的字体、字号、行距，并使用一致的测量与绘制上下文。
+3. 换行不是平台自动完成。可用 `TextLayout` / `LineBreakMeasurer` 生成布局，按实际像素计算高度；单独处理 Tab、段落换行、中英混排与 Unicode 组合字符。[Java 文字排版](https://docs.oracle.com/en/java/javase/25/docs/api/java.desktop/java/awt/font/LineBreakMeasurer.html)。
+4. 结果、分栏宽度、字号等变化后重新计算布局并调用 `inlay.update()`；仅颜色变化可重绘。普通滚动不重复排版全部内容，`paint()` 只绘制已算好的布局，不读 PSI、不访问数据库或网络。[Inlay 生命周期](https://github.com/JetBrains/intellij-community/blob/master/platform/editor-ui-api/src/com/intellij/openapi/editor/Inlay.java)。
+5. 通过 editor 鼠标事件识别 inlay 和按钮命中，提供展开/收起和右键菜单；点击译文正文不自动跳转、不触发请求。
+6. 折叠时显隐取决于锚点及关联方向，位于折叠边界的 inlay 可能仍可见；应主动验证注释折叠、外层函数折叠和已开启文档渲染的组合，必要时显式管理显示。[InlayProperties](https://github.com/JetBrains/intellij-community/blob/master/platform/editor-ui-api/src/com/intellij/openapi/editor/InlayProperties.java)。
+7. 多个编辑器共享翻译数据，各自管理布局、展开状态与资源；文件/编辑器关闭时释放显示和监听器。保存、撤销、搜索、复制和 Git diff 始终使用原文。
 
-Inlay 的定位是附加内容，单独使用不会隐藏原注释。因此，不能在可行性阶段承诺所有原位译文都能自动换行。最先用 Java 离线样例验证这些边界，再决定是否将多行自定义折叠纳入首版。[InlayModel](https://github.com/JetBrains/intellij-community/blob/master/platform/editor-ui-api/src/com/intellij/openapi/editor/InlayModel.java)。
-
-源码模式必须满足以下行为：
-
-- 显示 `//`、`/** */`、`<!-- -->`、块内 `*`、文档标签和原有缩进。
-- 悬停展示原文；编辑光标或选择进入对应注释时恢复原文，移出后恢复译文。
-- 保存、撤销、搜索、复制以及 Git diff 基于真实源文件；另设“复制译文”动作时才复制译文。
-- 修改文件后先清理旧显示，再用新版本结果更新；多个编辑器共享翻译结果，但各自管理展示资源。
-- 不修改用户的全局代码折叠或文档渲染设置；只管理插件自己创建的区域，遇到无法共存的区域恢复原文并提供阅读视图入口。
-- 不通过写入源 `Document` 再撤销、替换文件、透明字体遮挡代码等方式制造原位效果。
-
-IDEA 自带的文档注释渲染只能作为集成点候选；它不覆盖普通行注释、所有 HTML/XML 注释及 Markdown 全文，不能承担整套显示方案。
+原位“只显示译文”可作为后续可选阅读模式，先确认实际用户需求。普通 fold placeholder 会把换行转为空格；`CustomFoldRegion` 可自定义多行绘制，但只覆盖完整文档行且为实验性 API。这些限制不再阻挡默认功能。[普通折叠排版](https://github.com/JetBrains/intellij-community/blob/master/platform/platform-impl/src/com/intellij/openapi/editor/impl/view/EditorView.java)、[CustomFoldRegion](https://github.com/JetBrains/intellij-community/blob/master/platform/editor-ui-api/src/com/intellij/openapi/editor/CustomFoldRegion.java)。
 
 ## 只读阅读视图与 Markdown
 
-建议用独立阅读标签页承载 `JBCefBrowser`。沿用当前无边框排版：独立注释上下对照，行尾注释在代码行末追加；支持点击原始行号返回源码。复用 [readerContent.ts](../src/readerContent.ts) 和 [markdownReaderContent.ts](../src/markdownReaderContent.ts) 的布局规则，替换 `--vscode-*` 主题变量和 `acquireVsCodeApi()` 消息桥。
+阅读器由用户主动打开，面向长文而非日常注释。源码阅读器可优先评估独立内存文档加原生只读 viewer，保留熟悉的字体、选择和导航；Markdown 排版可用 `JBCefBrowser`。提供清晰的原文/译文切换、可选择复制的正文以及返回源码入口。现有 [readerContent.ts](../src/readerContent.ts) 和 [markdownReaderContent.ts](../src/markdownReaderContent.ts) 可参考，但布局与消息桥按 IDEA 重新设计。
 
 使用前检测 JCEF 可用性。不可用时提供只读文本阅读器，避免整个翻译功能失效。页面资源本地加载；外部图片、脚本、链接导航和消息入口按现有阅读器的安全边界处理，不能因为渲染 Markdown 而自动访问外部资源。[JCEF 官方接入](https://plugins.jetbrains.com/docs/intellij/embedded-browser-jcef.html)。
 
@@ -118,13 +154,13 @@ Markdown 继续仅由编辑器或项目树右键触发。选择 JVM Markdown 解
 
 保留现有 [translation/index.ts](../src/translation/index.ts) 的 `{comments: [{id, text}]}` / `{translations: [{id, text}]}` 协议；只发送缺失内容，按 ID 对应，不依赖响应顺序。单文件按批次串行、全局最多三个文件同时翻译，自动翻译预算沿用 500 个去重后的缺失项，之后手动继续。小文件一次请求；大文件根据预算拆批，不能承诺任意大小文件都压进一个请求。
 
-自动翻译仅在开关开启、配置有效且项目可信时执行，范围是当前打开且可见的源码及阅读器关联文件，不扫描整个项目。完整文件扫描与批量请求只在内容/配置变化等事件触发；滚动仅更新可见区域上下 10 行的展示，不重新调用 AI。沿用 600ms 编辑防抖，停用翻译时取消排队与进行中任务。
+自动翻译仅在开关开启、配置有效且项目可信时执行，范围是当前打开且可见的源码及阅读器关联文件，不扫描整个项目。完整文件扫描与批量请求只在内容/配置变化等事件触发；滚动不重新调用 AI。绘制优先处理视口及缓冲区域，同时保留已建立区域的布局高度，避免反复增删导致跳动。600ms 为编辑防抖起始值，停用自动翻译时取消自动任务；文件显示开关独立管理已有译文。
 
 保留接口地址与模型自由配置、可选 Key、通用文本 JSON / JSON object / JSON schema 模式，以及 `max_tokens` / `max_completion_tokens` / 不发送上限参数的选择。HTTP 重试、无效响应拆批、缺失项单独修复的上限沿用现有规则。成功部分可先显示；失败、重复或未知 ID 不进入成功缓存。使用可取消的 JVM HTTP 实现，并验证 IDE 代理设置与本地兼容服务访问。
 
 端点、模型、目标语言、自定义 Prompt 和开关使用原生持久化设置；API Key 在设置页用密码字段编辑，通过 `PasswordSafe` 保存，按规范化服务地址区分凭据。Key 不进入项目 `.idea` 文件、SQLite、日志或页面脚本。凭据读写和网络请求都不在 UI 线程执行。[设置持久化](https://plugins.jetbrains.com/docs/intellij/persisting-state-of-components.html)、[PasswordSafe](https://plugins.jetbrains.com/docs/intellij/persisting-sensitive-data.html)。
 
-后台扫描只持有短暂读锁，生成不可变快照后释放锁，再查库和请求网络。更新前检查 `Document.modificationStamp`、任务代次、项目/编辑器生命周期与配置版本；关闭文件、关闭翻译或切换服务后取消任务，并丢弃迟到结果。网络和数据库操作不得放入 PSI 读锁、绘制回调或 UI 线程。[线程与读操作规则](https://plugins.jetbrains.com/docs/intellij/threading-model.html)。
+后台扫描只持有短暂读锁，生成不可变快照后释放锁，再查库和请求网络。更新前检查 `Document.modificationStamp`、任务代次、项目/编辑器生命周期与配置版本；关闭文件、取消任务或切换服务后丢弃对应的迟到结果，停用自动翻译取消自动任务。显示开关不代替取消操作。网络和数据库操作不得放入 PSI 读锁、绘制回调或 UI 线程。[线程与读操作规则](https://plugins.jetbrains.com/docs/intellij/threading-model.html)。
 
 缓存实现建议：
 
@@ -138,7 +174,7 @@ Markdown 继续仅由编辑器或项目树右键触发。选择 JVM Markdown 解
 
 可移植的是协议、规则与样例；现有 TypeScript 编译产物不能作为 JVM 插件直接使用。`controller.ts`、`renderer.ts`、`reader.ts` 的 VS Code 生命周期和 UI 接口必须重写；TextMate/WASM、sql.js、Node HTTP、markdown-it 的运行时实现也必须替换。
 
-从现有 `tests/` 提取以下共享 JSON 夹具，保持两端行为一致：
+从现有 `tests/` 提取以下共享 JSON 夹具，保持内容解析、协议和缓存语义可核对；IDEA 的显示与交互测试按本文独立定义，不要求复制 VS Code 的行为：
 
 | 夹具来源 | IDEA 版必须验证 |
 | --- | --- |
@@ -154,10 +190,10 @@ Kotlin 公共方法编写 KDoc；注释提取与格式恢复保持至少 90% 的
 
 ## 实施顺序与完成标准
 
-1. **显示原型**：用固定译文验证 Java 的独立行、行尾、单行/多行 Javadoc、行内块注释；检查无边框效果、换行、主题/缩放、原文悬停、光标进出、代码折叠和文档渲染冲突。保存内容与修改标记必须不变。此阶段不调用 AI。
-2. **可用首版**：设置、凭据、自动扫描、批量 HTTP、SQLite、状态与取消；完成 Java/Kotlin/XML/HTML，并接上只读阅读视图。未改动注释再次打开时，缓存命中不得重复调用模型。
-3. **Markdown 与语言扩展**：移植全文分块和校验，加入编辑器/项目树右键，逐项验证其他可用语言；补齐跨平台打包与兼容性检查。
-4. **交付**：单元与平台集成测试使用 Mock 服务；在隔离 IDEA 沙箱验证真实编辑、悬停、关闭重开和缓存持久化，再生成 ZIP。原位显示未通过的场景要明确披露，不能算作完整支持。
+1. **显示原型**：固定译文验证 Java 的独立行、行尾、单行/多行 Javadoc、同行多个注释。重点检查 block Inlay 随分栏/字号变化的换行、四行预览与原地展开、视口稳定、正常编辑、代码折叠和文档渲染共存。保存内容与修改标记必须不变。此阶段不调用 AI，不做实验性原位替换。
+2. **可用首版**：设置、凭据、自动扫描、当前注释手动翻译、批量 HTTP、SQLite、文件级状态与取消；完成 Java/Kotlin/XML/HTML。缓存命中、展开/收起和显示切换不得重复调用模型。
+3. **长文与语言扩展**：完成主动打开的阅读器、Markdown 全文分块和校验、编辑器/项目树右键，逐项验证其他可用语言；补齐跨平台打包与兼容性检查。
+4. **交付**：单元与平台集成测试使用 Mock 服务；在隔离 IDEA 沙箱验证真实阅读、键盘/鼠标操作、关闭重开和缓存持久化，再生成 ZIP。以体验验收表为标准，明确披露尚未支持的组合；功能数量不替代阅读与编辑质量。
 
 ## 构建、发布与更新
 
