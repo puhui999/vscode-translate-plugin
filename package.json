@@ -279,10 +279,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/puhui999/vscode-translate-plugin.git"
+    "url": "git+https://github.com/puhui999/ai-comment-translator.git"
   },
-  "homepage": "https://github.com/puhui999/vscode-translate-plugin#readme",
+  "homepage": "https://github.com/puhui999/ai-comment-translator#readme",
   "bugs": {
-    "url": "https://github.com/puhui999/vscode-translate-plugin/issues"
+    "url": "https://github.com/puhui999/ai-comment-translator/issues"
   }
 }

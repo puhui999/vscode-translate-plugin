@@ -3,7 +3,7 @@ name: IDEA plugin
 on:
   push:
     branches:
-      - codex/intellij-idea
+      - master-idea
     tags:
       - 'idea-v*'
     paths:

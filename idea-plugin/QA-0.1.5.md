@@ -47,6 +47,6 @@ JAVA_HOME='/opt/homebrew/opt/openjdk@25/libexec/openjdk.jdk/Contents/Home' \
 - 截图：`artifacts/idea-qa/same-language-0.1.5/source-view.png`
 - 机器可读记录：`artifacts/idea-release/idea-0.1.5-verification.json`
 
-上述 SHA-256 仅对应元数据文案修订前的原生验证包，不代表修订后的本地包或 CI 发布包。发布工作流在 Linux 上独立重新打包；下载 [0.1.5 Release](https://github.com/puhui999/vscode-translate-plugin/releases/tag/idea-v0.1.5) 的安装包后，应使用同一 Release 附带的 `SHA256SUMS.txt` 校验。
+上述 SHA-256 仅对应元数据文案修订前的原生验证包，不代表修订后的本地包或 CI 发布包。发布工作流在 Linux 上独立重新打包；下载 [0.1.5 Release](https://github.com/puhui999/ai-comment-translator/releases/tag/idea-v0.1.5) 的安装包后，应使用同一 Release 附带的 `SHA256SUMS.txt` 校验。
 
 兼容范围为 IDEA `262.8665–262.*`。本记录仅覆盖发布前本地验证；发布状态、CI 测试与发布资产校验需以对应 GitHub Actions 运行及 Release 为准。

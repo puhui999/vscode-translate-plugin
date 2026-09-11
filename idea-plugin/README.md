@@ -1,12 +1,14 @@
 # 注释译读 · IntelliJ IDEA 验证版
 
+分支导航：[IntelliJ IDEA · master-idea](https://github.com/puhui999/ai-comment-translator/tree/master-idea) · [VS Code · master-vscode](https://github.com/puhui999/ai-comment-translator/tree/master-vscode)。本文对应 IDEA 插件 ZIP；VS Code 使用其分支中的 VSIX 安装包。
+
 版本 `0.1.5`。默认在原注释位置显示 AI 译文，悬停查看原文，点击后查看、编辑原注释，光标和选区离开后自动恢复译文。独立注释采用无边框多行排版；设置中也可选择原文与译文上下对照。显示使用编辑器的折叠或 Inlay 机制，译文不写入源文件，保存、撤销、普通复制和 Git diff 仍基于源码。
 
 开发基线为 IntelliJ IDEA `2026.2.0.1 / 262.8665.337`，安装包声明的兼容范围为 `262.8665` 至 `262.*`。当前是 IDEA 预览版，尚未承诺其他 JetBrains IDE 或旧版 IDEA 的兼容性。
 
 ## 安装与离线体验
 
-1. 从 [0.1.5 Release](https://github.com/puhui999/vscode-translate-plugin/releases/tag/idea-v0.1.5) 下载 [idea-comment-translator-0.1.5.zip](https://github.com/puhui999/vscode-translate-plugin/releases/download/idea-v0.1.5/idea-comment-translator-0.1.5.zip)。可用同一 Release 附带的 `SHA256SUMS.txt` 核对下载文件；安装时直接选择 ZIP，无需解压。
+1. 从 [0.1.5 Release](https://github.com/puhui999/ai-comment-translator/releases/tag/idea-v0.1.5) 下载 [idea-comment-translator-0.1.5.zip](https://github.com/puhui999/ai-comment-translator/releases/download/idea-v0.1.5/idea-comment-translator-0.1.5.zip)。可用同一 Release 附带的 `SHA256SUMS.txt` 核对下载文件；安装时直接选择 ZIP，无需解压。
 2. 在 IDEA 中打开 **Settings → Plugins → 齿轮菜单 → Install Plugin from Disk**，选择 ZIP，按提示完成安装。
 3. 打开一个项目，运行 **Tools → 注释译读 → 打开离线体验示例**。示例包含行注释、行尾注释、单行/多行文档注释和长译文；使用固定译文，不调用模型，也不写入翻译缓存。
 4. 运行 **Tools → 注释译读 → 配置翻译服务…**，填写自己的服务地址和模型。API Key 如有需要也在此设置。

@@ -1,7 +1,7 @@
 <idea-plugin>
   <id>com.puhui.comment-translator</id>
   <name>注释译读 · AI Comment Translator</name>
-  <vendor url="https://github.com/puhui999/vscode-translate-plugin">puhui999</vendor>
+  <vendor url="https://github.com/puhui999/ai-comment-translator">puhui999</vendor>
   <description><![CDATA[
     在原注释位置显示 AI 译文，独立注释支持无边框多行排版，悬停查看原文，点击后编辑。
     支持自定义 OpenAI 兼容服务、逐条并发请求、目标语言识别、本地 SQLite 缓存，以及可选的上下对照显示。
