@@ -1,13 +1,24 @@
-# 注释译读 · AI Comment Translator
+# 注释译读 · AI Comment Translator for VS Code
 
 在 VS Code 中自动翻译代码注释。默认在源码原注释位置逐行显示译文，悬停查看原文，光标或选区进入注释所在行时恢复原文以便编辑，离开后恢复译文。也可打开无边框的只读源码对照视图查看多行译文。每条逻辑注释一个请求，默认同时处理 10 条；先查 SQLite，只翻译未缓存的内容。译文不会写入源文件，不影响源码保存或 Git diff。
 
-版本导航：[VS Code（master-vscode）](https://github.com/puhui999/ai-comment-translator/blob/master-vscode/README.md) · [IntelliJ IDEA（master-idea）](https://github.com/puhui999/ai-comment-translator/blob/master-idea/idea-plugin/README.md)。
+## 版本与下载
+
+| 编辑器 | 维护分支与使用文档 | 当前源码 | 最新发布安装包 |
+| --- | --- | --- | --- |
+| VS Code | [master-vscode](https://github.com/puhui999/ai-comment-translator/blob/master-vscode/README.md) | 0.2.7，待发布 | [v0.2.6 · VSIX](https://github.com/puhui999/ai-comment-translator/releases/tag/v0.2.6) |
+| IntelliJ IDEA | [master-idea](https://github.com/puhui999/ai-comment-translator/blob/master-idea/idea-plugin/README.md) | 0.1.6，已发布预览版 | [idea-v0.1.6 · ZIP](https://github.com/puhui999/ai-comment-translator/releases/tag/idea-v0.1.6) |
+
+仓库默认分支为 `master-idea`；开发 VS Code 版本请切换到 `master-vscode`。两个版本分别适配各自编辑器，独立维护版本、设置与本地 SQLite 缓存，不自动共享配置或译文。
+
+**本文说明当前 VS Code 0.2.7 源码的行为。** 单条注释并发、可配置温度与思考模式、同语短标识等更新尚未包含在已发布的 v0.2.6 安装包中，体验这些功能需自行构建当前分支。IDEA 0.1.6 的 JavaDoc 校验修复属于 IDEA 版本，不能据此判断 VS Code 已包含相同修复。
 
 ## 安装和体验
 
-1. 从 [GitHub Releases](https://github.com/puhui999/ai-comment-translator/releases) 下载 VS Code 版本的 `.vsix`（IDEA 版本使用 ZIP）；自行构建当前分支则运行 `npm ci` 和 `npm run package`。本分支 `0.2.7` 为待发布版本。
-2. 在 VS Code 命令面板执行 **Extensions: Install from VSIX…**，选择 `artifacts/` 下的安装包。
+要求 VS Code **1.85.0 及以上**，并在受信任的本地工作区中使用。
+
+1. 从 [VS Code v0.2.6 Release](https://github.com/puhui999/ai-comment-translator/releases/tag/v0.2.6) 下载 `.vsix`；自行构建 0.2.7 则在 `master-vscode` 运行 `npm ci` 和 `npm run package`，安装包生成在 `artifacts/`。
+2. 在 VS Code 命令面板执行 **Extensions: Install from VSIX…**，选择下载或本地构建的安装包，按提示重新加载窗口。
 3. 执行 **注释译读：打开离线效果示例（无需 API）**，默认在源码中体验原位译文；执行 **注释译读：打开无边框多行阅读视图** 可查看多行对照。示例遵循已保存的显示模式，使用预置译文，不调用模型、不写入翻译缓存。
 4. 执行 **注释译读：打开翻译设置**，填写服务地址、模型名和 API Key；也可使用 **配置模型服务** 向导。
 5. 打开 Java 等受支持的源码文件，即可自动扫描、查库并显示译文。配置完成时已经打开的文件也会自动处理，无需额外执行翻译命令。
@@ -16,6 +27,12 @@
 `commentTranslator.automatic` 默认开启，配置有效的服务地址和模型后生效；设置在 VS Code 重启后保留。缺少配置或工作区不受信任时不发送请求，状态栏会提示原因。只处理当前打开并可见的源码及正在阅读的源文件，不扫描整个工作区。
 
 使用 **注释译读：开启 / 关闭自动翻译** 或设置页可关闭自动模式，取消当前窗口的排队及进行中请求，并清除译文显示。关闭后仍可通过 **开启 / 关闭当前文件翻译** 手动处理单个文件。自动模式下手动关闭某个文件，会暂停该文件，直到手动重新开启或关闭文件后重新打开。离线示例始终不调用模型。
+
+### 更新已安装的版本
+
+下载新 Release 的 `.vsix` 后，再次执行 **Extensions: Install from VSIX…** 覆盖安装并重新加载窗口。更新后可在扩展详情页查看实际版本；通常无需卸载插件或清除缓存。
+
+当前通过 GitHub Release 分发，尚未发布到 VS Code Marketplace，因此扩展管理中的“检查更新”不会从 GitHub 获取新安装包。IDEA 的 ZIP 不能用于 VS Code。需要校验下载内容时，可使用同一 Release 附带的 `SHA256SUMS.txt`。
 
 ## 扫描、查库、并发翻译
 
@@ -187,12 +204,24 @@ HTML、XML 和 Vue 模板支持 `<!-- ... -->` 注释；HTML/Vue 的 script、st
 
 单个注释本身大于字符预算时会给出提示，需要按模型容量调整 `maxBatchChars`。插件不会为了满足预算修改或截断源注释。
 
+## 常见问题
+
+| 现象 | 处理方式 |
+| --- | --- |
+| 配置后打开 Java 等文件没有译文 | 确认右下角语言模式受支持、工作区受信任、自动翻译已开启；执行 **注释译读：查看当前文件翻译状态** 检查具体原因。如果仅当前文件暂停，重新开启该文件翻译。 |
+| 光标处仍然显示原注释 | 原位模式会在光标或选区进入注释所在行时恢复原文以便编辑；移到其他代码行后显示译文。译文已经等于原文时也不会额外显示一份。 |
+| 长译文在源码中无法自由换行 | 执行 **打开无边框多行阅读视图**；源码原位模式沿用原注释的行数与坐标。 |
+| 提示缺少有效译文或未保留格式与标记 | 执行 **重试当前文件（复用缓存）**，成功结果会保留。此提示不等于输出 token 不够；先查看状态及服务响应约束，不必直接清空缓存。 |
+| 服务不支持 JSON Object 或 token 参数 | 将 `responseFormat` 设为 `text`；根据服务要求选择 `max_tokens`、`max_completion_tokens` 或 `omit`。 |
+| 翻译慢或频繁被限流 | 检查 `maxConcurrentRequests` 与服务额度；默认 10，有限流时调低。思考模式保留服务默认，支持 `thinking` 的服务可按需关闭。 |
+| 修改了温度等参数，已有译文没有变化 | 已有 SQLite 结果继续复用；需要重新生成时执行 **清除翻译缓存**，然后重新开启翻译。 |
+
 ## 开发和验证
 
 开发使用 Node.js 22+（发布工作流固定为 24.13.1），扩展输出面向 VS Code 1.85+ 的 Node 18 运行时。
 
 ```sh
-npm install
+npm ci
 npm run typecheck
 npm test
 npm run test:coverage
@@ -203,7 +232,7 @@ npm run package
 
 `npm run compile` 先运行 TypeScript strict 检查，再用 esbuild 打包到 `dist/extension.js` 并复制两个 WASM 资源。VS Code 中按 F5 启动扩展开发窗口。测试使用 Mock，不需要模型 Key。
 
-GitHub Actions 仅在推送 `v*` 发布标签时运行。标签必须与 `package.json` 版本一致（例如版本 `0.2.7` 对应 `v0.2.7`）；同一个发布工作流完成测试、构建 VSIX，并将安装包与 SHA-256 校验文件上传到 GitHub Release。发布说明放在 `.github/release-notes/<标签>.md`。工作流使用仓库自带的 `GITHUB_TOKEN`，无需另外配置个人访问令牌。分支推送和 Pull Request 不触发构建，开发验证可使用上述本地命令。
+GitHub Actions 仅在推送 `v*` 发布标签时运行；IDEA 使用独立的 `idea-v*` 标签。VS Code 标签必须与 `package.json` 版本一致（例如版本 `0.2.7` 对应 `v0.2.7`）；同一个发布工作流完成测试、构建 VSIX，并将安装包与 SHA-256 校验文件上传到 GitHub Release。发布前需准备 `.github/release-notes/<标签>.md`。工作流使用仓库自带的 `GITHUB_TOKEN`，无需另外配置个人访问令牌。分支推送和 Pull Request 不触发构建，开发验证可使用上述本地命令。
 
 如需发布到 Marketplace，再将 `package.json` 的 `publisher: local-dev` 替换为自己的 Marketplace publisher，并使用 `vsce publish`。GitHub Release 工作流不会发布到 Marketplace，也不会安装到用户的日常 VS Code；本地 `npm run package` 仅打包。
 
